@@ -3433,10 +3433,28 @@ function dl(e, t) {
 }
 window.addEventListener("resize", M.checkTrusted(bi));
 
+/* ── SMOOTH SCROLLWHEEL ZOOM ── */
+let targetZoom = 1.0;
+let currentZoom = 1.0;
+
+window.addEventListener("wheel", function(e) {
+    // Prevent zooming while scrolling through menus like Store or Alliance
+    if (e.target.id === "chatBox" || e.target.closest("#storeHolder") || e.target.closest("#allianceHolder") || e.target.closest("#guideCard")) return;
+    
+    // Scroll down = zoom out, Scroll up = zoom in
+    const delta = e.deltaY > 0 ? -0.08 : 0.08;
+    targetZoom = Math.max(0.4, Math.min(2.0, targetZoom + delta)); // Min zoom 0.4x (wide), Max zoom 2.0x (close)
+}, { passive: true });
+
 function bi() {
     De = window.innerWidth, Ae = window.innerHeight;
-    const e = Math.max(De / _, Ae / L) * Pe;
-    Be.width = De * Pe, Be.height = Ae * Pe, Be.style.width = De + "px", Be.style.height = Ae + "px", k.setTransform(e, 0, 0, e, (De * Pe - _ * e) / 2, (Ae * Pe - L * e) / 2)
+    
+    // Smooth lerp interpolation for cinematic zooming
+    currentZoom += (targetZoom - currentZoom) * 0.15;
+    const e = Math.max(De / _, Ae / L) * Pe * currentZoom;
+    
+    Be.width = De * Pe, Be.height = Ae * Pe, Be.style.width = De + "px", Be.style.height = Ae + "px";
+    k.setTransform(e, 0, 0, e, (De * Pe - _ * e) / 2, (Ae * Pe - L * e) / 2);
 }
 bi();
 let ot;
@@ -4270,7 +4288,7 @@ window.requestAnimFrame = function() {
 }();
 
 function as() {
-    He = Date.now(), K = He - Xi, Xi = He, Cl(), requestAnimFrame(as)
+    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), requestAnimFrame(as)
 }
 Hl();
 as();
