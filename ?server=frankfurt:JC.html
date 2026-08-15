@@ -46,7 +46,9 @@
                 },
                 config: {},
                 bootstrapper: {
-                    init: function() { return Promise.resolve(); }
+                    init: function() { return Promise.resolve(); },
+                    complete: function() { console.log("FRVR Bootstrapper complete bypassed."); },
+                    setProgress: function() {} 
                 }
             };
             window.frvrSdkInitPromise = Promise.resolve();
