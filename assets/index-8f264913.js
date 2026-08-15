@@ -2765,7 +2765,7 @@ let v, Bn, r, Me = 1,
     On = 0,
     Hn = 0,
     oe, ae, Ni, yi = 0;
-const _ = y.maxScreenWidth,
+let _ = y.maxScreenWidth,
     L = y.maxScreenHeight;
 let De, Ae, et = !1;
 document.getElementById("ad-container");
@@ -3433,27 +3433,36 @@ function dl(e, t) {
 }
 window.addEventListener("resize", M.checkTrusted(bi));
 
-/* ── SMOOTH SCROLLWHEEL ZOOM ── */
+/* ── SMOOTH SCROLL ZOOM & FULLSCREEN FILL ── */
 let targetZoom = 1.0;
 let currentZoom = 1.0;
 
 window.addEventListener("wheel", function(e) {
-    // Prevent zooming while scrolling through menus like Store or Alliance
     if (e.target.id === "chatBox" || e.target.closest("#storeHolder") || e.target.closest("#allianceHolder") || e.target.closest("#guideCard")) return;
     
-    // Scroll down = zoom out, Scroll up = zoom in
     const delta = e.deltaY > 0 ? -0.08 : 0.08;
-    targetZoom = Math.max(0.4, Math.min(2.0, targetZoom + delta)); // Min zoom 0.4x (wide), Max zoom 2.0x (close)
+    targetZoom = Math.max(0.4, Math.min(2.0, targetZoom + delta));
 }, { passive: true });
 
 function bi() {
-    De = window.innerWidth, Ae = window.innerHeight;
+    De = window.innerWidth;
+    Ae = window.innerHeight;
     
-    // Smooth lerp interpolation for cinematic zooming
+    // Smooth zoom interpolation
     currentZoom += (targetZoom - currentZoom) * 0.15;
-    const e = Math.max(De / _, Ae / L) * Pe * currentZoom;
     
-    Be.width = De * Pe, Be.height = Ae * Pe, Be.style.width = De + "px", Be.style.height = Ae + "px";
+    // Dynamically expand the rendering boundaries so it fills the screen completely
+    _ = y.maxScreenWidth / currentZoom;
+    L = y.maxScreenHeight / currentZoom;
+    
+    const e = Math.max(De / _, Ae / L) * Pe;
+    
+    Be.width = De * Pe;
+    Be.height = Ae * Pe;
+    Be.style.width = De + "px";
+    Be.style.height = Ae + "px";
+    
+    // Center the camera
     k.setTransform(e, 0, 0, e, (De * Pe - _ * e) / 2, (Ae * Pe - L * e) / 2);
 }
 bi();
