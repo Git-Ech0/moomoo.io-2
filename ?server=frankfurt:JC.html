@@ -37,25 +37,30 @@
     <body>
         <!-- FAKE SDK TO PREVENT GAME CRASHES AFTER REMOVING ADS/TRACKERS -->
         <script>
-            const dummyFunction = function() {};
+            // This function instantly resolves, tricking the game into thinking an ad finished or data loaded
+            const dummyFunction = function() { return Promise.resolve(); };
             
-            window.FRVR = {
-                init: dummyFunction,
-                config: {},
-                bootstrapper: {
-                    init: function() { return Promise.resolve(); },
-                    complete: function() { console.log("Bootstrapper bypassed"); },
-                    setProgress: dummyFunction
-                }
-            };
-            
-            // This Proxy will safely absorb ANY tracker function the game tries to call 
-            // (like levelStart, logEvent, track, etc.) without crashing.
-            window.FRVR.tracker = new Proxy({}, {
+            // A generic proxy that absorbs any missing function call safely
+            const safeProxy = new Proxy({}, {
                 get: function(target, prop) {
                     return dummyFunction;
                 }
             });
+
+            window.FRVR = {
+                init: dummyFunction,
+                config: {},
+                bootstrapper: {
+                    init: dummyFunction,
+                    complete: function() { console.log("Bootstrapper bypassed"); },
+                    setProgress: dummyFunction
+                },
+                tracker: safeProxy, // Bypasses spawn/death trackers
+                ads: safeProxy      // Bypasses the .show() ad crash on spawn
+            };
+            
+            // Legacy ad mock (just in case MooMoo's old ad system is still hiding in the code)
+            window.cpmstarAPI = safeProxy;
 
             window.frvrSdkInitPromise = Promise.resolve();
         </script>
