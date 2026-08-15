@@ -37,20 +37,26 @@
     <body>
         <!-- FAKE SDK TO PREVENT GAME CRASHES AFTER REMOVING ADS/TRACKERS -->
         <script>
+            const dummyFunction = function() {};
+            
             window.FRVR = {
-                init: function() {},
-                tracker: {
-                    addExtraFieldFunction: function() {},
-                    track: function() {},
-                    logEvent: function() {}
-                },
+                init: dummyFunction,
                 config: {},
                 bootstrapper: {
                     init: function() { return Promise.resolve(); },
-                    complete: function() { console.log("FRVR Bootstrapper complete bypassed."); },
-                    setProgress: function() {} 
+                    complete: function() { console.log("Bootstrapper bypassed"); },
+                    setProgress: dummyFunction
                 }
             };
+            
+            // This Proxy will safely absorb ANY tracker function the game tries to call 
+            // (like levelStart, logEvent, track, etc.) without crashing.
+            window.FRVR.tracker = new Proxy({}, {
+                get: function(target, prop) {
+                    return dummyFunction;
+                }
+            });
+
             window.frvrSdkInitPromise = Promise.resolve();
         </script>
         
