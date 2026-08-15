@@ -2819,8 +2819,8 @@ const ce = document.getElementById("storeMenu"),
     Ze = Tn.hats,
     Ue = Tn.accessories;
 var X = new sa(ra, ge, M, y);
-const vt = "#1b253b", // Sleek dark slate gridlines & outlines
-    tn = "#0b0f19", // Dark shadow boundaries
+const vt = "#525252",
+    tn = "#3d3f42",
     Le = 5.5;
 y.DAY_INTERVAL / 24;
 y.DAY_INTERVAL / 2;
@@ -3433,28 +3433,10 @@ function dl(e, t) {
 }
 window.addEventListener("resize", M.checkTrusted(bi));
 
-/* ── SMOOTH SCROLLWHEEL ZOOM ── */
-let targetZoom = 1.0;
-let currentZoom = 1.0;
-
-window.addEventListener("wheel", function(e) {
-    // Prevent zooming while scrolling through menus like Store or Alliance
-    if (e.target.id === "chatBox" || e.target.closest("#storeHolder") || e.target.closest("#allianceHolder") || e.target.closest("#guideCard")) return;
-    
-    // Scroll down = zoom out, Scroll up = zoom in
-    const delta = e.deltaY > 0 ? -0.08 : 0.08;
-    targetZoom = Math.max(0.4, Math.min(2.0, targetZoom + delta)); // Min zoom 0.4x (wide), Max zoom 2.0x (close)
-}, { passive: true });
-
 function bi() {
     De = window.innerWidth, Ae = window.innerHeight;
-    
-    // Smooth lerp interpolation for cinematic zooming
-    currentZoom += (targetZoom - currentZoom) * 0.15;
-    const e = Math.max(De / _, Ae / L) * Pe * currentZoom;
-    
-    Be.width = De * Pe, Be.height = Ae * Pe, Be.style.width = De + "px", Be.style.height = Ae + "px";
-    k.setTransform(e, 0, 0, e, (De * Pe - _ * e) / 2, (Ae * Pe - L * e) / 2);
+    const e = Math.max(De / _, Ae / L) * Pe;
+    Be.width = De * Pe, Be.height = Ae * Pe, Be.style.width = De + "px", Be.style.height = Ae + "px", k.setTransform(e, 0, 0, e, (De * Pe - _ * e) / 2, (Ae * Pe - L * e) / 2)
 }
 bi();
 let ot;
@@ -3749,14 +3731,7 @@ function Cl() {
                     r.x = r.x1 + e * u, e = r.y2 - r.y1, r.y = r.y1 + e * u, r.dir = Math.lerpAngle(r.d2, r.d1, Math.min(1.2, g))
                 } const d = oe - _ / 2,
             l = ae - L / 2;
-        /* ── DARK MIDNIGHT BIOMES ── */
-        const C_GRASS = "#0f1423";      // Deep midnight navy ground
-        const C_DESERT = "#181b30";     // Twilight dune
-        const C_SNOW = "#1c253d";       // Moonlit pale slate
-        const C_RIVER_SAND = "#131728"; // Dark river shore
-        const C_RIVER_WATER = "#082542";// Deep luminescent ocean blue
-        
-        y.snowBiomeTop - l <= 0 && y.mapScale - y.snowBiomeTop - l >= L ? (k.fillStyle = C_GRASS, k.fillRect(0, 0, _, L)) : y.mapScale - y.snowBiomeTop - l <= 0 ? (k.fillStyle = C_DESERT, k.fillRect(0, 0, _, L)) : y.snowBiomeTop - l >= L ? (k.fillStyle = C_SNOW, k.fillRect(0, 0, _, L)) : y.snowBiomeTop - l >= 0 ? (k.fillStyle = C_SNOW, k.fillRect(0, 0, _, y.snowBiomeTop - l), k.fillStyle = C_GRASS, k.fillRect(0, y.snowBiomeTop - l, _, L - (y.snowBiomeTop - l))) : (k.fillStyle = C_GRASS, k.fillRect(0, 0, _, y.mapScale - y.snowBiomeTop - l), k.fillStyle = C_DESERT, k.fillRect(0, y.mapScale - y.snowBiomeTop - l, _, L - (y.mapScale - y.snowBiomeTop - l))), Pt || (Me += Ft * y.waveSpeed * K, Me >= y.waveMax ? (Me = y.waveMax, Ft = -1) : Me <= 1 && (Me = Ft = 1), k.globalAlpha = 1, k.fillStyle = C_RIVER_SAND, cn(d, l, k, y.riverPadding), k.fillStyle = C_RIVER_WATER, cn(d, l, k, (Me - 1) * 250))
+        y.snowBiomeTop - l <= 0 && y.mapScale - y.snowBiomeTop - l >= L ? (k.fillStyle = "#b6db66", k.fillRect(0, 0, _, L)) : y.mapScale - y.snowBiomeTop - l <= 0 ? (k.fillStyle = "#dbc666", k.fillRect(0, 0, _, L)) : y.snowBiomeTop - l >= L ? (k.fillStyle = "#fff", k.fillRect(0, 0, _, L)) : y.snowBiomeTop - l >= 0 ? (k.fillStyle = "#fff", k.fillRect(0, 0, _, y.snowBiomeTop - l), k.fillStyle = "#b6db66", k.fillRect(0, y.snowBiomeTop - l, _, L - (y.snowBiomeTop - l))) : (k.fillStyle = "#b6db66", k.fillRect(0, 0, _, y.mapScale - y.snowBiomeTop - l), k.fillStyle = "#dbc666", k.fillRect(0, y.mapScale - y.snowBiomeTop - l, _, L - (y.mapScale - y.snowBiomeTop - l))), Pt || (Me += Ft * y.waveSpeed * K, Me >= y.waveMax ? (Me = y.waveMax, Ft = -1) : Me <= 1 && (Me = Ft = 1), k.globalAlpha = 1, k.fillStyle = "#dbc666", cn(d, l, k, y.riverPadding), k.fillStyle = "#91b2db", cn(d, l, k, (Me - 1) * 250)), k.globalAlpha = 1, k.strokeStyle = vt, Ge(-1, d, l), k.globalAlpha = 1, k.lineWidth = Le, ln(0, d, l), hn(d, l, 0), k.globalAlpha = 1;
         for (var t = 0; t < N.length; ++t) r = N[t], r.active && r.visible && (r.animate(K), k.save(), k.translate(r.x - d, r.y - l), k.rotate(r.dir + r.dirPlus - Math.PI / 2), Gl(r, k), k.restore());
         if (Ge(0, d, l), ln(1, d, l), Ge(1, d, l), hn(d, l, 1), Ge(2, d, l), Ge(3, d, l), k.fillStyle = "#000", k.globalAlpha = .09, d <= 0 && k.fillRect(0, 0, -d, L), y.mapScale - d <= _) {
             var s = Math.max(0, -l);
@@ -3767,7 +3742,7 @@ function Cl() {
             let c = 0;
             y.mapScale - d <= _ && (c = _ - (y.mapScale - d)), k.fillRect(n, y.mapScale - l, _ - n - c, L - (y.mapScale - l))
         }
-        k.globalAlpha = 1, k.fillStyle = "rgba(4, 7, 18, 0.45)", k.fillRect(0, 0, _, L), k.strokeStyle = tn;
+        k.globalAlpha = 1, k.fillStyle = "rgba(0, 0, 70, 0.35)", k.fillRect(0, 0, _, L), k.strokeStyle = tn;
         /* ── ESP: hitboxes + player range ring ── */
         (function _drawESP() {
             k.save();
@@ -4295,7 +4270,7 @@ window.requestAnimFrame = function() {
 }();
 
 function as() {
-    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), requestAnimFrame(as)
+    He = Date.now(), K = He - Xi, Xi = He, Cl(), requestAnimFrame(as)
 }
 Hl();
 as();
