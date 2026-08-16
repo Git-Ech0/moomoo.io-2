@@ -4319,31 +4319,41 @@ function Kl(e, t, i) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   SHAME-AWARE AUTO-HEAL + BULL HELMET SHAME DRAIN SYSTEM
+   SHAME-BALANCED AUTO-HEAL + BULL HELMET SHAME DRAIN SYSTEM
    ──────────────────────────────────────────────────────────────────
    Shame rules (mirrored from server):
-     • Heal < 120ms after damage  → clientShame++
-     • Heal ≥ 120ms after damage  → clientShame -= 2  (clamped ≥ 0)
-     • clientShame ≥ 7            → 30s shame-hat lock, reset to 0
-   Strategy:
-     • Always delay heals to ≥ 122ms post-damage (safe buffer)
-     • Emergency override at ≤ 25% HP (accept shame, survive)
-     • Bull helmet (id 7) drains -5 HP/s → we heal each tick after
-       122ms → each tick is shame-2, letting us drain the score fast
-     • Bull helmet only active when out of enemy range & shame > 0
+     • Heal < 120ms after damage  → shame +1
+     • Heal ≥ 120ms after damage  → shame -2  (clamped ≥ 0)
+     • shame ≥ 7                  → 30s lockout, reset to 0
+
+   Heal timing strategy (balance speed vs shame):
+     • shame 0-4  → FAST heal  (20ms buffer, shame is low, stay alive)
+     • shame 5-6  → SLOW heal  (125ms, forces shame to drop safely)
+     • HP ≤ 30%   → FAST always (survive first, shame second)
+
+   Bull helmet (id 7) drains -5 HP/s as a controlled shame pump:
+     out of range + shame > 0 → equip → tick fires → heal at 125ms
+     → each tick = -2 shame; in enemy range → strip immediately
    ══════════════════════════════════════════════════════════════════ */
 
 // ── Shame state
 let clientShameScore  = 0;
-let clientShameTimer  = 0;           // ms remaining on shame-hat lockout
+let clientShameTimer  = 0;
 const SHAME_THRESHOLD        = 7;
 const SHAME_HAT_DURATION     = 30000;
-const SAFE_HEAL_DELAY        = 122;  // ms – just past the 120ms server window
-const EMERGENCY_HP_RATIO     = 0.25; // below this % we heal immediately regardless
+
+// Fast path: just enough buffer for server to register the hit state
+const FAST_HEAL_DELAY        = 20;
+// Slow path: clears the 120ms window, forces shame -2
+const SLOW_HEAL_DELAY        = 125;
+// HP ratio below which we ignore shame and just heal
+const EMERGENCY_HP_RATIO     = 0.30;
+// Switch to slow heals at this shame level to avoid lockout
+const SHAME_CAUTION_LEVEL    = 5;
 
 // ── Damage timing
 let lastDamageTime    = 0;
-let pendingHealTimer  = null;        // setTimeout handle for delayed heal
+let pendingHealTimer  = null;
 
 // ── General heal throttle
 let healLock          = false;
@@ -4351,10 +4361,10 @@ let lastHealTimestamp = 0;
 
 // ── Bull Helmet management
 const BULL_HELMET_ID         = 7;
-const ENEMY_SAFE_RANGE       = 620;  // px – beyond this = safe to use helmet
+const ENEMY_SAFE_RANGE       = 620;
 let   bullHelmetActive       = false;
 let   previousHatId          = null;
-let   bullHatCooldown        = 0;    // ms until next equip/unequip allowed
+let   bullHatCooldown        = 0;
 const BULL_HAT_SWAP_COOLDOWN = 500;
 
 // ── Helpers
@@ -4370,9 +4380,9 @@ function _nearestEnemyDist() {
     for (let i = 0; i < E.length; i++) {
         const p = E[i];
         if (!p || !p.visible || p === v) continue;
-        if (v.team && p.team === v.team)  continue; // ally
+        if (v.team && p.team === v.team) continue;
         const dx = p.x - v.x, dy = p.y - v.y;
-        const d  = Math.sqrt(dx*dx + dy*dy);
+        const d  = Math.sqrt(dx * dx + dy * dy);
         if (d < best) best = d;
     }
     return best;
@@ -4385,7 +4395,7 @@ function _inEnemyRange() {
 // ── Hat swap helpers
 function _equipBullHelmet() {
     if (bullHelmetActive || bullHatCooldown > 0 || !v || !v.alive) return;
-    previousHatId   = _currentHatId();
+    previousHatId    = _currentHatId();
     bullHelmetActive = true;
     bullHatCooldown  = BULL_HAT_SWAP_COOLDOWN;
     O.send("c", 0, BULL_HELMET_ID, false);
@@ -4398,33 +4408,30 @@ function _unequipBullHelmet() {
     if (previousHatId !== null && previousHatId !== BULL_HELMET_ID) {
         O.send("c", 0, previousHatId, false);
     } else {
-        O.send("c", 1, BULL_HELMET_ID, false); // bare unequip
+        O.send("c", 1, BULL_HELMET_ID, false);
     }
     previousHatId = null;
 }
 
-// ── Core heal executor (runs after timing checks pass)
+// ── Core heal executor — always fires after the chosen delay
 function _executeHeal() {
     if (!v || !v.alive || healLock) return;
-    if (clientShameTimer > 0) return;           // shame-hat lockout
+    if (clientShameTimer > 0) return;
 
     const maxHP = v.maxHealth || 100;
     if (v.health >= maxHP) return;
 
     const now = performance.now();
-    if (now - lastHealTimestamp < 80) return;   // spam guard
+    if (now - lastHealTimestamp < 80) return;
 
-    // ── Update our client-side shame model
+    // Update shame model based on actual timing at fire time
     if (lastDamageTime > 0) {
         const msSinceDmg = now - lastDamageTime;
         if (msSinceDmg < 120) {
-            // Healing too fast → shame up
             clientShameScore++;
         } else {
-            // Healing in the safe window → shame down
             clientShameScore = Math.max(0, clientShameScore - 2);
         }
-        // Shame hat trigger
         if (clientShameScore >= SHAME_THRESHOLD) {
             clientShameScore = 0;
             clientShameTimer = SHAME_HAT_DURATION;
@@ -4432,18 +4439,17 @@ function _executeHeal() {
         }
     }
 
-    // ── Execute the food-consume burst
     healLock          = true;
     lastHealTimestamp = now;
 
-    const foodId       = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healValues   = { 0: 20, 1: 40, 2: 30 };
-    const healAmount   = healValues[foodId] || 20;
-    const deficit      = maxHP - v.health;
-    const itemsNeeded  = Math.min(3, Math.ceil(deficit / healAmount));
+    const foodId      = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healValues  = { 0: 20, 1: 40, 2: 30 };
+    const healAmount  = healValues[foodId] || 20;
+    const deficit     = maxHP - v.health;
+    const itemsNeeded = Math.min(3, Math.ceil(deficit / healAmount));
 
-    const wasBuilding  = v.buildIndex >= 0;
-    const activeSlot   = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
+    const wasBuilding = v.buildIndex >= 0;
+    const activeSlot  = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
 
     v.buildIndex = foodId;
 
@@ -4462,56 +4468,48 @@ function _executeHeal() {
     }, 10);
 }
 
-// ── Public entry point – called on every health update
+// ── Public entry point — picks FAST or SLOW delay based on shame level
 function queueAtomicHeal() {
     if (!v || !v.alive || healLock) return;
-    if (clientShameTimer > 0)            return; // shame-hat lockout
+    if (clientShameTimer > 0) return;
 
     const maxHP = v.maxHealth || 100;
-    if (v.health >= maxHP)               return;
+    if (v.health >= maxHP) return;
 
-    // Emergency heal: below 25% HP – fire immediately, eat the shame
-    const isEmergency = (v.health / maxHP) <= EMERGENCY_HP_RATIO;
-    if (isEmergency) {
-        if (pendingHealTimer) { clearTimeout(pendingHealTimer); pendingHealTimer = null; }
-        _executeHeal();
-        return;
-    }
-
-    const now          = performance.now();
-    const msSinceDmg   = lastDamageTime > 0 ? now - lastDamageTime : Infinity;
-
-    // If we're still inside the 120ms shame window, schedule for when it expires
-    if (msSinceDmg < SAFE_HEAL_DELAY) {
-        if (!pendingHealTimer) {
-            const wait = SAFE_HEAL_DELAY - msSinceDmg;
-            pendingHealTimer = setTimeout(() => {
-                pendingHealTimer = null;
-                _executeHeal();
-            }, wait);
-        }
-        return;
-    }
-
-    // Safe to heal right now
+    // Cancel stale pending timer so we re-evaluate with current shame level
     if (pendingHealTimer) { clearTimeout(pendingHealTimer); pendingHealTimer = null; }
-    _executeHeal();
+
+    const now        = performance.now();
+    const msSinceDmg = lastDamageTime > 0 ? now - lastDamageTime : Infinity;
+
+    // Low HP: survive at all costs, ignore shame
+    const isEmergency  = (v.health / maxHP) <= EMERGENCY_HP_RATIO;
+    // Shame too high: force slow heal to bring it down before hitting lockout
+    const needSlowHeal = !isEmergency && clientShameScore >= SHAME_CAUTION_LEVEL;
+
+    const targetDelay = needSlowHeal ? SLOW_HEAL_DELAY : FAST_HEAL_DELAY;
+    const remaining   = targetDelay - msSinceDmg;
+
+    if (remaining <= 0) {
+        _executeHeal();
+    } else {
+        pendingHealTimer = setTimeout(() => {
+            pendingHealTimer = null;
+            _executeHeal();
+        }, remaining);
+    }
 }
 
 // ── Per-frame shame + bull-helmet update (called from Cl)
 function _updateShameAndHelmet(dtMs) {
-    // Tick down shame-hat lockout
     if (clientShameTimer > 0) {
         clientShameTimer = Math.max(0, clientShameTimer - dtMs);
     }
-
-    // Tick down hat-swap cooldown
     if (bullHatCooldown > 0) {
         bullHatCooldown = Math.max(0, bullHatCooldown - dtMs);
     }
 
     if (!v || !v.alive) {
-        // Make sure helmet is off when dead/logged out
         if (bullHelmetActive) _unequipBullHelmet();
         return;
     }
@@ -4519,16 +4517,11 @@ function _updateShameAndHelmet(dtMs) {
     const inRange = _inEnemyRange();
 
     if (inRange) {
-        // Enemy nearby – always strip the bull helmet immediately
         if (bullHelmetActive) _unequipBullHelmet();
     } else {
-        // Safe zone – use helmet to bleed shame score down
         const wantHelmet = clientShameScore > 0 && clientShameTimer <= 0;
-        if (wantHelmet && !bullHelmetActive) {
-            _equipBullHelmet();
-        } else if (!wantHelmet && bullHelmetActive) {
-            _unequipBullHelmet();
-        }
+        if (wantHelmet && !bullHelmetActive)      _equipBullHelmet();
+        else if (!wantHelmet && bullHelmetActive) _unequipBullHelmet();
     }
 }
 
