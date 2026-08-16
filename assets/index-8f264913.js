@@ -3628,7 +3628,11 @@ function xl(e) {
 }
 
 function vl(e, t, i, s) {
-    Pn.showText(e, t, 50, .18, 500, Math.abs(i), i >= 0 ? "#fff" : "#8ecc51")
+    Pn.showText(e, t, 50, .18, 500, Math.abs(i), i >= 0 ? "#fff" : "#8ecc51");
+    // If damage was dealt at our player's coordinates, heal instantly
+    if (i < 0 && v && v.alive && M.getDistance(e, t, v.x, v.y) < 60) {
+        fastHeal();
+    }
 }
 let yt = 99999;
 
@@ -3732,7 +3736,9 @@ function Tl(e) {
 let an = null;
 
 function Cl() {
-    triggerAutoHeal();
+    if (v && v.alive && v.health < (v.maxHealth || 100)) {
+        fastHeal();
+    }
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
             qt = He;
@@ -4246,41 +4252,46 @@ function Kl(e, t, i) {
     v && (v[e] = t, i && Zn())
 }
 
-/* ── AUTO-HEAL SYSTEM ── */
-let lastHealTime = 0;
-const HEAL_COOLDOWN = 130; // 130ms delay prevents the server's anti-spam shame penalty
+/* ── HYPER-FAST INSTANT AUTO-HEAL ── */
+let isHealing = false;
 
-function triggerAutoHeal() {
-    if (!v || !v.alive || v.health >= v.maxHealth) return;
+function fastHeal() {
+    if (!v || !v.alive || v.health >= (v.maxHealth || 100)) return;
+
+    // Get food ID (0 = Apple, 1 = Cookie, 2 = Cheese)
+    const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healVal = foodId === 1 ? 40 : (foodId === 2 ? 30 : 20);
     
-    const now = Date.now();
-    if (now - lastHealTime < HEAL_COOLDOWN) return;
+    // Calculate how many food items needed to instantly reach 100% HP
+    const deficit = (v.maxHealth || 100) - v.health;
+    const needed = Math.min(3, Math.ceil(deficit / healVal)); // Max 3 at a time prevents anti-cheat kick
 
-    // Food is always the first item in the player's unlocked inventory (v.items[0])
-    const foodId = v.items[0];
-    const foodItem = b.list[foodId];
+    // Blast the eat packets
+    for (let i = 0; i < needed; i++) {
+        O.send("z", foodId, false);
+        O.send("F", 1, null);
+        O.send("F", 0, null);
+    }
 
-    // Ensure we have enough food points in our inventory to consume it
-    if (!foodItem || v.food < foodItem.req[1]) return;
-
-    lastHealTime = now;
-
-    // 1. Select food slot
-    O.send("z", foodId, false);
-    // 2. Consume / Eat
-    O.send("F", 1, null);
-    O.send("F", 0, null);
-    // 3. Immediately switch back to your active weapon
-    O.send("z", v.weapons[v.weaponIndex], true);
+    // Return to weapon 10ms later so the server is guaranteed to register the food
+    if (!isHealing) {
+        isHealing = true;
+        setTimeout(() => {
+            if (v && v.alive && v.weapons) {
+                O.send("z", v.weapons[v.weaponIndex] || 0, true);
+            }
+            isHealing = false;
+        }, 10);
+    }
 }
 
 function $l(e, t) {
     r = Rt(e);
     if (r) {
         r.health = t;
-        // Instantly trigger heal the millisecond our player takes damage
-        if (r === v && v.health < v.maxHealth) {
-            triggerAutoHeal();
+        // Trigger the exact millisecond our health drops
+        if (r === v && v.health < (v.maxHealth || 100)) {
+            fastHeal();
         }
     }
 }
