@@ -3755,7 +3755,6 @@ function Tl(e) {
 let an = null;
 
 function Cl() {
-    runHealLogic();
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
             qt = He;
@@ -4319,51 +4318,46 @@ function Kl(e, t, i) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   HIGH-SPEED ZERO-LATENCY AUTO-HEAL
+   NON-INVASIVE AUTO-HEAL (Mirrors Reference Script)
    ══════════════════════════════════════════════════════════════════ */
 
 let lastHitTime = 0;
 let localShame = 0;
+let lastHealedHp = 100;
 
-// Instant multi-packet food consumption — perfectly preserves active weapon/tool
 function eatFood(deficit) {
     if (!v || !v.alive) return;
     const maxHP = v.maxHealth || 100;
     if (v.health >= maxHP) return;
 
-    // Detect equipped food (0 = Apple [20hp], 1 = Cookie [40hp], 2 = Cheese [30hp])
+    // Detect equipped food
     const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
     const healAmt = ({ 0: 20, 1: 40, 2: 30 })[foodId] || 20;
     const count = Math.max(1, Math.ceil(deficit / healAmt));
 
-    // PRESERVE EXACT ACTIVE TOOL / WEAPON / BUILDING ITEM:
+    // Preserve exact weapon or building item
     const holdingBuildItem = v.buildIndex >= 0;
     const restoreId = holdingBuildItem 
         ? v.buildIndex 
         : (v.weaponIndex != null ? v.weaponIndex : ((v.weapons && v.weapons[0]) || 0));
     const isWeapon = !holdingBuildItem;
-
     const angle = (typeof Ci === "function") ? Ci() : 0;
 
-    // Fast packet burst: Select food -> Eat N times -> Instantly restore original tool
+    // 1. Select food -> 2. Eat -> 3. Instantly re-equip original weapon/item
     O.send("z", foodId, false);
     for (let i = 0; i < count; i++) {
         O.send("F", 1, angle);
         O.send("F", 0, angle);
     }
     O.send("z", restoreId, isWeapon);
-}
 
-// Continuous Tick / Bleed Check (Handles poison, lava, DPS, and missed ticks)
-function runHealLogic() {
-    if (!v || !v.alive) return;
-    const maxHP = v.maxHealth || 100;
-    
-    if (v.health < maxHP && localShame < 7) {
-        eatFood(maxHP - v.health);
+    // 4. CRITICAL: If you were holding left-click / spacebar (U == 1), RESUME your attack!
+    if (U === 1) {
+        O.send("F", 1, angle);
     }
 }
 
+// Reactive heal: Fires the exact instant the server sends damage (Packet "O")
 function $l(e, t) {
     r = Rt(e);
     if (r) {
@@ -4373,17 +4367,15 @@ function $l(e, t) {
         if (r === v) {
             if (t < prevHealth) {
                 const now = Date.now();
-                const timeSinceHit = now - lastHitTime;
-                lastHitTime = now;
-
-                if (timeSinceHit <= 120) {
+                if (now - lastHitTime <= 120) {
                     localShame++;
                 } else {
                     localShame = Math.max(0, localShame - 2);
                 }
+                lastHitTime = now;
 
                 const maxHP = v.maxHealth || 100;
-                if (t < maxHP && localShame < 8) {
+                if (t < maxHP && localShame < 7) {
                     eatFood(maxHP - t);
                 }
             } else if (t >= 100) {
@@ -4396,7 +4388,12 @@ function $l(e, t) {
 function Jl(e) {
     const t = Date.now();
     for (var i = 0; i < E.length; ++i) E[i].forcePos = !E[i].visible, E[i].visible = !1;
-    for (var i = 0; i < e.length;) r = Rt(e[i]), r && (r.t1 = r.t2 === void 0 ? t : r.t2, r.t2 = t, r.x1 = r.x, r.y1 = r.y, r.x2 = e[i + 1], r.y2 = e[i + 2], r.d1 = r.d2 === void 0 ? e[i + 3] : r.d2, r.d2 = e[i + 3], r.dt = 0, r.buildIndex = e[i + 4], r.weaponIndex = e[i + 5], r.weaponVariant = e[i + 6], r.team = e[i + 7], r.isLeader = e[i + 8], r.skinIndex = e[i + 9], r.tailIndex = e[i + 10], r.iconIndex = e[i + 11], r.zIndex = e[i + 12], r.visible = !0), i += 13
+    for (var i = 0; i < e.length;) r = Rt(e[i]), r && (r.t1 = r.t2 === void 0 ? t : r.t2, r.t2 = t, r.x1 = r.x, r.y1 = r.y, r.x2 = e[i + 1], r.y2 = e[i + 2], r.d1 = r.d2 === void 0 ? e[i + 3] : r.d2, r.d2 = e[i + 3], r.dt = 0, r.buildIndex = e[i + 4], r.weaponIndex = e[i + 5], r.weaponVariant = e[i + 6], r.team = e[i + 7], r.isLeader = e[i + 8], r.skinIndex = e[i + 9], r.tailIndex = e[i + 10], r.iconIndex = e[i + 11], r.zIndex = e[i + 12], r.visible = !0), i += 13;
+
+    // Passive/bleed heal check (fires ONLY ONCE per server tick, ~9 times/sec)
+    if (v && v.alive && v.health < (v.maxHealth || 100) && localShame < 7) {
+        eatFood((v.maxHealth || 100) - v.health);
+    }
 }
 
 function Ql(e) {
