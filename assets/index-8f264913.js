@@ -3737,7 +3737,7 @@ let an = null;
 
 function Cl() {
     if (v && v.alive && v.health < (v.maxHealth || 100)) {
-        fastHeal();
+        performCleanHeal();
     }
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
