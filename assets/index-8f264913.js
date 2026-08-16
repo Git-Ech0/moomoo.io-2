@@ -4325,7 +4325,7 @@ function Kl(e, t, i) {
 let lastHitTime = 0;
 let localShame = 0;
 
-// Instant multi-packet food consumption
+// Instant multi-packet food consumption — perfectly preserves active weapon/tool
 function eatFood(deficit) {
     if (!v || !v.alive) return;
     const maxHP = v.maxHealth || 100;
@@ -4335,18 +4335,23 @@ function eatFood(deficit) {
     const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
     const healAmt = ({ 0: 20, 1: 40, 2: 30 })[foodId] || 20;
     const count = Math.max(1, Math.ceil(deficit / healAmt));
-    
-    // Get active weapon and attack angle to prevent angle desync
-    const curWep = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : 0;
+
+    // PRESERVE EXACT ACTIVE TOOL / WEAPON / BUILDING ITEM:
+    const holdingBuildItem = v.buildIndex >= 0;
+    const restoreId = holdingBuildItem 
+        ? v.buildIndex 
+        : (v.weaponIndex != null ? v.weaponIndex : ((v.weapons && v.weapons[0]) || 0));
+    const isWeapon = !holdingBuildItem;
+
     const angle = (typeof Ci === "function") ? Ci() : 0;
 
-    // Fast packet burst: Select food -> Eat N times -> Reselect weapon
+    // Fast packet burst: Select food -> Eat N times -> Instantly restore original tool
     O.send("z", foodId, false);
     for (let i = 0; i < count; i++) {
         O.send("F", 1, angle);
         O.send("F", 0, angle);
     }
-    O.send("z", curWep, true);
+    O.send("z", restoreId, isWeapon);
 }
 
 // Continuous Tick / Bleed Check (Handles poison, lava, DPS, and missed ticks)
