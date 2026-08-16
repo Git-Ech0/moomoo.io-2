@@ -4338,22 +4338,6 @@ function Kl(e, t, i) {
      • no bull-helmet complexity, no healLock, no microtask restore
      • v.alive = false is now set in Sl() so heal never fires post-death
    ══════════════════════════════════════════════════════════════════ */
-     • Heal < 120ms after damage  → shame +1
-     • Heal ≥ 120ms after damage  → shame -2  (clamped ≥ 0)
-     • shame ≥ 7                  → 30s lockout, reset to 0
-     • shame RESETS FULLY on death
-
-   Heal strategy: fire immediately, no queued timers.
-   Shame state is tracked and respected; lockout still enforced.
-     • HP ≤ 30%  → override shame lockout, survive first
-   Bull helmet (id 7) drains -5 HP/s as a controlled shame pump:
-     out of range + shame > 0 → equip → tick fires → heal at 125ms
-     → each tick = -2 shame; in enemy range → strip immediately
-
-   Key fix: eat packets are sent then server is restored via
-   queueMicrotask — client buildIndex restored synchronously so
-   the swing animation and held item are NEVER interrupted.
-   ══════════════════════════════════════════════════════════════════ */
 
 // ── Tick-based heal state (mirrors ttf reference ver 2.2)
 let serverTick    = 0;   // increments every server update cycle (Jl packet "a")
