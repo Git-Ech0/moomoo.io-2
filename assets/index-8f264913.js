@@ -3753,7 +3753,7 @@ let an = null;
 
 function Cl() {
     if (v && v.alive && v.health < (v.maxHealth || 100)) {
-        performCleanHeal();
+        queueAtomicHeal();
     }
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
@@ -4291,37 +4291,54 @@ function Kl(e, t, i) {
     v && (v[e] = t, i && Zn())
 }
 
-/* ── HYPER-FAST AUTO-HEAL WITH SLOT MEMORY ── */
-let lastHealTick = 0;
+/* ── SERIALIZED ATOMIC AUTO-HEAL ── */
+let healLock = false;
+let lastHealTimestamp = 0;
+const POST_DAMAGE_DELAY = 10; // Minimum ms buffer to let the server process damage state
 
-function performCleanHeal() {
-    if (!v || !v.alive || v.health >= (v.maxHealth || 100)) return;
+function queueAtomicHeal() {
+    if (!v || !v.alive || healLock) return;
 
-    const now = Date.now();
-    if (now - lastHealTick < 90) return; // Ultra-fast 90ms cooldown
-    lastHealTick = now;
+    const maxHP = v.maxHealth || 100;
+    if (v.health >= maxHP) return;
 
-    // 1. Remember the EXACT active slot (whether you were holding a weapon, spike, wall, or trap)
-    const wasBuilding = v.buildIndex >= 0;
-    const previousSlot = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
-    const isWeapon = !wasBuilding;
+    const now = performance.now();
+    // Safety throttle to prevent server-side spam flags
+    if (now - lastHealTimestamp < 80) return;
 
-    // 2. Identify food type & calculate needed items
+    healLock = true;
+    lastHealTimestamp = now;
+
+    // 1. Determine food tier and calculate required consumption
     const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healVal = foodId === 1 ? 40 : (foodId === 2 ? 30 : 20);
-    const needed = Math.min(2, Math.ceil(((v.maxHealth || 100) - v.health) / healVal));
+    const healValues = { 0: 20, 1: 40, 2: 30 }; // Apple, Cookie, Cheese
+    const healAmount = healValues[foodId] || 20;
 
-    // 3. Fast-consume food
-    for (let i = 0; i < needed; i++) {
-        v.buildIndex = foodId;
+    const deficit = maxHP - v.health;
+    const itemsNeeded = Math.min(3, Math.ceil(deficit / healAmount));
+
+    // 2. Snapshot the current holding state (item vs weapon)
+    const wasBuilding = v.buildIndex >= 0;
+    const activeSlot = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
+
+    // 3. Set local state immediately to prevent client animation conflicts
+    v.buildIndex = foodId;
+
+    // 4. Send the complete consumption batch
+    for (let i = 0; i < itemsNeeded; i++) {
         O.send("z", foodId, false);
         O.send("F", 1, null);
         O.send("F", 0, null);
     }
 
-    // 4. GUARANTEED RESTORATION: Instantly restore previous slot locally and on the server
-    v.buildIndex = wasBuilding ? previousSlot : -1;
-    O.send("z", previousSlot, isWeapon);
+    // 5. Release trigger and restore original slot cleanly
+    setTimeout(() => {
+        if (v && v.alive) {
+            v.buildIndex = wasBuilding ? activeSlot : -1;
+            O.send("z", activeSlot, !wasBuilding);
+        }
+        healLock = false;
+    }, POST_DAMAGE_DELAY);
 }
 
 function $l(e, t) {
@@ -4329,7 +4346,7 @@ function $l(e, t) {
     if (r) {
         r.health = t;
         if (r === v && v.health < (v.maxHealth || 100)) {
-            performCleanHeal();
+            queueAtomicHeal();
         }
     }
 }
