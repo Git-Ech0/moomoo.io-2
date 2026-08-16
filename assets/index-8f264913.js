@@ -4353,7 +4353,7 @@ function Kl(e, t, i) {
 // ── Shame state
 let clientShameScore  = 0;
 let clientShameTimer  = 0;
-const SHAME_THRESHOLD        = 7;
+const SHAME_THRESHOLD        = 8;   // mirrors server: shameCount >= 8 → lockout
 const SHAME_HAT_DURATION     = 30000;
 
 // HP ratio below which we ignore shame and just heal
@@ -4438,8 +4438,13 @@ function _executeHeal() {
     if (now - lastHealTimestamp < HEAL_THROTTLE_MS) return;
 
     // ── Update shame model at fire time ──
+    // Mirror server: hitTime is reset to 0 on the FIRST eat so shame only
+    // scores once per damage event. Without this reset every _executeHeal
+    // call within the 120ms window stacked shame separately — that's what
+    // was making the number fly up before the server was anywhere near 8.
     if (lastDamageTime > 0) {
         const msSinceDmg = now - lastDamageTime;
+        lastDamageTime = 0;   // ← consume the damage timestamp (server: hitTime = 0)
         if (msSinceDmg < 120) {
             clientShameScore++;
         } else {
