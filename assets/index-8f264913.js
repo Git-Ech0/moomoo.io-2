@@ -332,6 +332,20 @@ function Ro(e) {
 const Hi = new rs,
     Bo = new cs;
 let Z = null;
+/* ── PACKETS PER SECOND TRACKER ── */
+let ppsCounter = 0;
+let currentPPS = 0;
+let ppsTimer = Date.now();
+
+function trackPacket() {
+    ppsCounter++;
+    const now = Date.now();
+    if (now - ppsTimer >= 1000) {
+        currentPPS = Math.round((ppsCounter * 1000) / (now - ppsTimer));
+        ppsCounter = 0;
+        ppsTimer = now;
+    }
+}
 const O = {
     socket: null,
     connected: !1,
@@ -345,6 +359,7 @@ const O = {
             this.socket = new kn(e), this.socket.binaryType = "arraybuffer";
             let o = !1;
             this.socket.onmessage = function(d) {
+                trackPacket();
                 var l = new Uint8Array(d.data);
                 const c = Bo.decode(l);
                 var m = c[0],
@@ -376,6 +391,7 @@ const O = {
         }
     },
     send: function(e) {
+        trackPacket();
         const t = Array.prototype.slice.call(arguments, 1);
         if (!this.socket) return;
         if (Z && Z.mode === Ht) {
@@ -3888,6 +3904,29 @@ function Cl() {
             if (r = E[t] || N[t - E.length], r.visible && (r.skinIndex != 10 || r == v || r.team && r.team == v.team)) {
                 const m = (r.team ? "[" + r.team + "] " : "") + (r.name || "");
                 if (m != "") {
+                    // ── DRAW PPS COUNTER TO THE LEFT OF LOCAL PLAYER'S NAME ──
+                    if (r === v) {
+                        k.save();
+                        k.font = "20px Hammersmith One";
+                        k.textBaseline = "middle";
+                        k.textAlign = "center";
+                        
+                        const ppsText = `[${currentPPS} PPS]`;
+                        const nameWidth = k.measureText(m).width;
+                        const ppsWidth = k.measureText(ppsText).width;
+                        
+                        // Positioned cleanly to the left of the username text
+                        const ppsX = (r.x - d) - (nameWidth / 2) - (ppsWidth / 2) - 8;
+                        const ppsY = r.y - l - r.scale - y.nameY;
+                        
+                        k.fillStyle = "#8ecc51"; // Vibrant lime green
+                        k.strokeStyle = "#000";
+                        k.lineWidth = 6;
+                        k.strokeText(ppsText, ppsX, ppsY);
+                        k.fillText(ppsText, ppsX, ppsY);
+                        k.restore();
+                    }
+                
                     if (k.font = (r.nameScale || 30) + "px Hammersmith One", k.fillStyle = "#fff", k.textBaseline = "middle", k.textAlign = "center", k.lineWidth = r.nameScale ? 11 : 8, k.lineJoin = "round", k.strokeText(m, r.x - d, r.y - l - r.scale - y.nameY), k.fillText(m, r.x - d, r.y - l - r.scale - y.nameY), r.isLeader && Ye.crown.isLoaded) {
                         var a = y.crownIconScale,
                             n = r.x - d - a / 2 - k.measureText(m).width / 2 - y.crownPad;
@@ -4252,33 +4291,37 @@ function Kl(e, t, i) {
     v && (v[e] = t, i && Zn())
 }
 
-/* ── SYNCHRONIZED QUICK-HEAL ── */
+/* ── HYPER-FAST AUTO-HEAL WITH SLOT MEMORY ── */
 let lastHealTick = 0;
 
 function performCleanHeal() {
     if (!v || !v.alive || v.health >= (v.maxHealth || 100)) return;
 
-    // Prevent packet flooding (matches server tick cycle)
     const now = Date.now();
-    if (now - lastHealTick < 125) return; 
+    if (now - lastHealTick < 90) return; // Ultra-fast 90ms cooldown
     lastHealTick = now;
 
-    const foodIndex = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const weaponIndex = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : 0;
+    // 1. Remember the EXACT active slot (whether you were holding a weapon, spike, wall, or trap)
+    const wasBuilding = v.buildIndex >= 0;
+    const previousSlot = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
+    const isWeapon = !wasBuilding;
 
-    // 1. Set local state to food so the client renderer doesn't start an attack animation
-    v.buildIndex = foodIndex;
+    // 2. Identify food type & calculate needed items
+    const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healVal = foodId === 1 ? 40 : (foodId === 2 ? 30 : 20);
+    const needed = Math.min(2, Math.ceil(((v.maxHealth || 100) - v.health) / healVal));
 
-    // 2. Tell the server to select food
-    O.send("z", foodIndex, false);
+    // 3. Fast-consume food
+    for (let i = 0; i < needed; i++) {
+        v.buildIndex = foodId;
+        O.send("z", foodId, false);
+        O.send("F", 1, null);
+        O.send("F", 0, null);
+    }
 
-    // 3. Press and immediately release the action key
-    O.send("F", 1, null);
-    O.send("F", 0, null);
-
-    // 4. Return local and server state back to weapon cleanly
-    v.buildIndex = -1;
-    O.send("z", weaponIndex, true);
+    // 4. GUARANTEED RESTORATION: Instantly restore previous slot locally and on the server
+    v.buildIndex = wasBuilding ? previousSlot : -1;
+    O.send("z", previousSlot, isWeapon);
 }
 
 function $l(e, t) {
