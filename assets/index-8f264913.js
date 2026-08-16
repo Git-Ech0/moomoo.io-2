@@ -4248,7 +4248,7 @@ function Kl(e, t, i) {
 
 /* ── AUTO-HEAL SYSTEM ── */
 let lastHealTime = 0;
-const HEAL_COOLDOWN = 0; // 130ms delay prevents the server's anti-spam shame penalty
+const HEAL_COOLDOWN = 130; // 130ms delay prevents the server's anti-spam shame penalty
 
 function triggerAutoHeal() {
     if (!v || !v.alive || v.health >= v.maxHealth) return;
