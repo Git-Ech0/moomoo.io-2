@@ -4252,46 +4252,41 @@ function Kl(e, t, i) {
     v && (v[e] = t, i && Zn())
 }
 
-/* ── HYPER-FAST INSTANT AUTO-HEAL ── */
-let isHealing = false;
+/* ── SYNCHRONIZED QUICK-HEAL ── */
+let lastHealTick = 0;
 
-function fastHeal() {
+function performCleanHeal() {
     if (!v || !v.alive || v.health >= (v.maxHealth || 100)) return;
 
-    // Get food ID (0 = Apple, 1 = Cookie, 2 = Cheese)
-    const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healVal = foodId === 1 ? 40 : (foodId === 2 ? 30 : 20);
-    
-    // Calculate how many food items needed to instantly reach 100% HP
-    const deficit = (v.maxHealth || 100) - v.health;
-    const needed = Math.min(3, Math.ceil(deficit / healVal)); // Max 3 at a time prevents anti-cheat kick
+    // Prevent packet flooding (matches server tick cycle)
+    const now = Date.now();
+    if (now - lastHealTick < 125) return; 
+    lastHealTick = now;
 
-    // Blast the eat packets
-    for (let i = 0; i < needed; i++) {
-        O.send("z", foodId, false);
-        O.send("F", 1, null);
-        O.send("F", 0, null);
-    }
+    const foodIndex = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const weaponIndex = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : 0;
 
-    // Return to weapon 10ms later so the server is guaranteed to register the food
-    if (!isHealing) {
-        isHealing = true;
-        setTimeout(() => {
-            if (v && v.alive && v.weapons) {
-                O.send("z", v.weapons[v.weaponIndex] || 0, true);
-            }
-            isHealing = false;
-        }, 10);
-    }
+    // 1. Set local state to food so the client renderer doesn't start an attack animation
+    v.buildIndex = foodIndex;
+
+    // 2. Tell the server to select food
+    O.send("z", foodIndex, false);
+
+    // 3. Press and immediately release the action key
+    O.send("F", 1, null);
+    O.send("F", 0, null);
+
+    // 4. Return local and server state back to weapon cleanly
+    v.buildIndex = -1;
+    O.send("z", weaponIndex, true);
 }
 
 function $l(e, t) {
     r = Rt(e);
     if (r) {
         r.health = t;
-        // Trigger the exact millisecond our health drops
         if (r === v && v.health < (v.maxHealth || 100)) {
-            fastHeal();
+            performCleanHeal();
         }
     }
 }
