@@ -4363,7 +4363,6 @@ function runHealLogic() {
     }
 }
 
-// Immediate Reactive Hook: Intercepts raw health packets from the server
 function $l(e, t) {
     r = Rt(e);
     if (r) {
@@ -4376,14 +4375,12 @@ function $l(e, t) {
                 const timeSinceHit = now - lastHitTime;
                 lastHitTime = now;
 
-                // Track combat hit frequency
                 if (timeSinceHit <= 120) {
                     localShame++;
                 } else {
                     localShame = Math.max(0, localShame - 2);
                 }
 
-                // ZERO-DELAY HEAL: Eat immediately on the exact frame damage arrives
                 const maxHP = v.maxHealth || 100;
                 if (t < maxHP && localShame < 8) {
                     eatFood(maxHP - t);
@@ -4391,20 +4388,6 @@ function $l(e, t) {
             } else if (t >= 100) {
                 localShame = 0;
             }
-        }
-    }
-}
-
-function $l(e, t) {
-    r = Rt(e);
-    if (r) {
-        const prevHealth = r.health;
-        r.health = t;
-
-        if (r === v && t < prevHealth) {
-            // Damage received — mirror reference: damageTick = tick + 1
-            // This delays heal by at least 1 server tick (prevents shame stacking)
-            healDamageTick = serverTick + 1;
         }
     }
 }
