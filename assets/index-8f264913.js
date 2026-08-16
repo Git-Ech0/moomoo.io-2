@@ -3893,31 +3893,22 @@ function Cl() {
                     }
                 }
                 r.health > 0 && (y.healthBarWidth, k.fillStyle = tn, k.roundRect(r.x - d - y.healthBarWidth - y.healthBarPad, r.y - l + r.scale + y.nameY, y.healthBarWidth * 2 + y.healthBarPad * 2, 17, 8), k.fill(), k.fillStyle = r == v || r.team && r.team == v.team ? "#8ecc51" : "#cc5151", k.roundRect(r.x - d - y.healthBarWidth, r.y - l + r.scale + y.nameY + y.healthBarPad, y.healthBarWidth * 2 * (r.health / r.maxHealth), 17 - y.healthBarPad * 2, 7), k.fill());
-                /* ── Reload bar (local player only, identical geometry to health bar, orange pastel) ──
-                   Positioned 2px above the health bar background.
-                   Fill = 1.0 when fully reloaded, snaps to 0.0 on attack, rises linearly to 1.0 as
-                   reloads[weaponIndex] counts down from weapon.speed back to 0. */
-                if (r === v && r.health > 0 && b.weapons[v.weaponIndex] && b.weapons[v.weaponIndex].speed) {
-                    /* WHY animTime not reloads[]:
-                       v.reloads[weaponIndex] is managed server-side and is NEVER decremented on the
-                       client, so it was always 0 → bar was permanently full (the "static" bug).
-                       v.animTime IS decremented every frame by hn() → r.animate(K) BEFORE this loop
-                       runs, so it's always current. startAnim() sets animTime = animSpeed = weapon.speed
-                       on every attack (triggered by server "K" message → Pl() → startAnim), then
-                       animTime counts down to 0 at perfect pace — exactly one weapon-speed cycle.
-                       fill = 0.0 the instant attack fires, rises linearly to 1.0 when ready again.
-                       Works for all weapons: sword, axe, bow, crossbow, musket. */
-                    const _reloadFill = (v.animSpeed > 0 && v.animTime > 0)
-                        ? Math.max(0, Math.min(1, 1 - v.animTime / v.animSpeed))
+                /* ── Universal Reload Bar (Melee, Bows, Crossbows, Muskets) ── */
+                if (r === v && r.health > 0 && b.weapons[v.weaponIndex]) {
+                    // Decrement reload timer in real-time
+                    if (v.reloadTimer > 0) {
+                        v.reloadTimer -= K;
+                        if (v.reloadTimer < 0) v.reloadTimer = 0;
+                    }
+                
+                    const _reloadFill = (v.reloadMax > 0 && v.reloadTimer > 0)
+                        ? Math.max(0, Math.min(1, 1 - (v.reloadTimer / v.reloadMax)))
                         : 1.0;
-                    /* health bar Y origin = r.y - l + r.scale + y.nameY
-                       reload bar sits 2px gap above health bar → offset = -(17 + 2) = -19 */
+                
                     const _rbY = r.y - l + r.scale + y.nameY - 19;
-                    /* background – same dark rounded rect as health bar */
                     k.fillStyle = tn;
                     k.roundRect(r.x - d - y.healthBarWidth - y.healthBarPad, _rbY, y.healthBarWidth * 2 + y.healthBarPad * 2, 17, 8);
                     k.fill();
-                    /* orange pastel fill – same inner geometry as health bar */
                     k.fillStyle = "#e89955";
                     k.roundRect(r.x - d - y.healthBarWidth, _rbY + y.healthBarPad, y.healthBarWidth * 2 * _reloadFill, 17 - y.healthBarPad * 2, 7);
                     k.fill();
@@ -3965,7 +3956,15 @@ function Ge(e, t, i) {
 }
 
 function Pl(e, t, i) {
-    r = Rt(e), r && r.startAnim(t, i)
+    r = Rt(e);
+    if (r) {
+        r.startAnim(t, i);
+        // Track melee weapon reload
+        if (r === v && b.weapons[v.weaponIndex]) {
+            v.reloadMax = b.weapons[v.weaponIndex].speed;
+            v.reloadTimer = v.reloadMax;
+        }
+    }
 }
 
 function hn(e, t, i) {
@@ -4179,7 +4178,14 @@ function _l(e, t) {
 }
 
 function Ll(e, t, i, s, n, a, o, d) {
-    xi && (Rn.addProjectile(e, t, i, s, n, a, null, null, o).sid = d)
+    if (xi) {
+        Rn.addProjectile(e, t, i, s, n, a, null, null, o).sid = d;
+        // Track ranged weapon reload when projectile spawns near player
+        if (v && v.alive && M.getDistance(e, t, v.x, v.y) < 120 && b.weapons[v.weaponIndex]) {
+            v.reloadMax = b.weapons[v.weaponIndex].speed;
+            v.reloadTimer = v.reloadMax;
+        }
+    }
 }
 
 function ql(e, t) {
