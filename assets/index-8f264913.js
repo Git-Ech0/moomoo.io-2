@@ -3657,6 +3657,17 @@ function Sl() {
     try {
         factorem.refreshAds([2], !0)
     } catch {}
+
+    // ── Full shame + heal state wipe on death ──
+    clientShameScore  = 0;
+    clientShameTimer  = 0;
+    lastDamageTime    = 0;
+    healLock          = false;
+    lastHealTimestamp = 0;
+    bullHelmetActive  = false;
+    previousHatId     = null;
+    bullHatCooldown   = 0;
+
     ki.style.display = "none", Gn(), wt = {
         x: v.x,
         y: v.y
@@ -4325,15 +4336,18 @@ function Kl(e, t, i) {
      • Heal < 120ms after damage  → shame +1
      • Heal ≥ 120ms after damage  → shame -2  (clamped ≥ 0)
      • shame ≥ 7                  → 30s lockout, reset to 0
+     • shame RESETS FULLY on death
 
-   Heal timing strategy (balance speed vs shame):
-     • shame 0-4  → FAST heal  (20ms buffer, shame is low, stay alive)
-     • shame 5-6  → SLOW heal  (125ms, forces shame to drop safely)
-     • HP ≤ 30%   → FAST always (survive first, shame second)
-
+   Heal strategy: fire immediately, no queued timers.
+   Shame state is tracked and respected; lockout still enforced.
+     • HP ≤ 30%  → override shame lockout, survive first
    Bull helmet (id 7) drains -5 HP/s as a controlled shame pump:
      out of range + shame > 0 → equip → tick fires → heal at 125ms
      → each tick = -2 shame; in enemy range → strip immediately
+
+   Key fix: eat packets are sent then server is restored via
+   queueMicrotask — client buildIndex restored synchronously so
+   the swing animation and held item are NEVER interrupted.
    ══════════════════════════════════════════════════════════════════ */
 
 // ── Shame state
@@ -4342,10 +4356,6 @@ let clientShameTimer  = 0;
 const SHAME_THRESHOLD        = 7;
 const SHAME_HAT_DURATION     = 30000;
 
-// Fast path: just enough buffer for server to register the hit state
-const FAST_HEAL_DELAY        = 20;
-// Slow path: clears the 120ms window, forces shame -2
-const SLOW_HEAL_DELAY        = 125;
 // HP ratio below which we ignore shame and just heal
 const EMERGENCY_HP_RATIO     = 0.30;
 // Switch to slow heals at this shame level to avoid lockout
@@ -4353,11 +4363,11 @@ const SHAME_CAUTION_LEVEL    = 5;
 
 // ── Damage timing
 let lastDamageTime    = 0;
-let pendingHealTimer  = null;
 
-// ── General heal throttle
+// ── General heal throttle  (reduced: 35ms → fast but not server-spammy)
 let healLock          = false;
 let lastHealTimestamp = 0;
+const HEAL_THROTTLE_MS        = 35;
 
 // ── Bull Helmet management
 const BULL_HELMET_ID         = 7;
@@ -4413,18 +4423,21 @@ function _unequipBullHelmet() {
     previousHatId = null;
 }
 
-// ── Core heal executor — always fires after the chosen delay
+// ── Core heal executor — fires immediately, no queued timers
 function _executeHeal() {
     if (!v || !v.alive || healLock) return;
-    if (clientShameTimer > 0) return;
 
-    const maxHP = v.maxHealth || 100;
+    const maxHP       = v.maxHealth || 100;
+    const isEmergency = (v.health / maxHP) <= EMERGENCY_HP_RATIO;
+
+    // Shame lockout: still enforced unless HP is critical
+    if (clientShameTimer > 0 && !isEmergency) return;
     if (v.health >= maxHP) return;
 
     const now = performance.now();
-    if (now - lastHealTimestamp < 80) return;
+    if (now - lastHealTimestamp < HEAL_THROTTLE_MS) return;
 
-    // Update shame model based on actual timing at fire time
+    // ── Update shame model at fire time ──
     if (lastDamageTime > 0) {
         const msSinceDmg = now - lastDamageTime;
         if (msSinceDmg < 120) {
@@ -4435,69 +4448,68 @@ function _executeHeal() {
         if (clientShameScore >= SHAME_THRESHOLD) {
             clientShameScore = 0;
             clientShameTimer = SHAME_HAT_DURATION;
-            return;
+            if (!isEmergency) return;  // honour lockout unless dying
         }
     }
 
     healLock          = true;
     lastHealTimestamp = now;
 
-    const foodId      = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healValues  = { 0: 20, 1: 40, 2: 30 };
-    const healAmount  = healValues[foodId] || 20;
-    const deficit     = maxHP - v.health;
+    const foodId     = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healValues = { 0: 20, 1: 40, 2: 30 };
+    const healAmount = healValues[foodId] || 20;
+    const deficit    = maxHP - v.health;
     const itemsNeeded = Math.min(3, Math.ceil(deficit / healAmount));
 
-    const wasBuilding = v.buildIndex >= 0;
-    const activeSlot  = wasBuilding ? v.buildIndex : (v.weapons[v.weaponIndex] || 0);
+    // ── Snapshot client state — we restore it synchronously so the
+    //    render loop NEVER sees the buildIndex change (no swing interrupt)
+    const snapBuildIndex  = v.buildIndex;
+    const snapWeaponIndex = v.weaponIndex;
+    const wasWeaponMode   = snapBuildIndex < 0;
 
+    // Briefly set client buildIndex so ke() doesn't send stale state
+    // during the microtask gap, then restore it right away
     v.buildIndex = foodId;
 
+    // ── Fire eat packets to server ──
+    O.send("z", foodId, false);
     for (let i = 0; i < itemsNeeded; i++) {
-        O.send("z", foodId, false);
         O.send("F", 1, null);
         O.send("F", 0, null);
     }
 
-    setTimeout(() => {
-        if (v && v.alive) {
-            v.buildIndex = wasBuilding ? activeSlot : -1;
-            O.send("z", activeSlot, !wasBuilding);
+    // ── Restore client state immediately (same sync call) ──
+    // This runs before the next requestAnimationFrame, so the player
+    // is never visually shown holding food / interrupted mid-swing
+    v.buildIndex = snapBuildIndex;
+
+    // ── Restore server-side selection via microtask ──
+    // queueMicrotask fires before any setTimeout/rAF, keeping the
+    // server in sync with one extra round-trip packet
+    queueMicrotask(() => {
+        if (!v || !v.alive) { healLock = false; return; }
+        if (wasWeaponMode) {
+            // restore weapon: send weapon ID with isWeapon=true
+            const wpId = v.weapons[snapWeaponIndex];
+            if (wpId != null) O.send("z", wpId, true);
+        } else {
+            // restore build item
+            O.send("z", snapBuildIndex, false);
         }
         healLock = false;
-    }, 10);
+    });
 }
 
-// ── Public entry point — picks FAST or SLOW delay based on shame level
+// ── Public entry — fires immediately, no pending timer mechanism
 function queueAtomicHeal() {
-    if (!v || !v.alive || healLock) return;
-    if (clientShameTimer > 0) return;
+    if (!v || !v.alive) return;
+    if (v.health >= (v.maxHealth || 100)) return;
+    _executeHeal();
+}
 
-    const maxHP = v.maxHealth || 100;
-    if (v.health >= maxHP) return;
-
-    // Cancel stale pending timer so we re-evaluate with current shame level
-    if (pendingHealTimer) { clearTimeout(pendingHealTimer); pendingHealTimer = null; }
-
-    const now        = performance.now();
-    const msSinceDmg = lastDamageTime > 0 ? now - lastDamageTime : Infinity;
-
-    // Low HP: survive at all costs, ignore shame
-    const isEmergency  = (v.health / maxHP) <= EMERGENCY_HP_RATIO;
-    // Shame too high: force slow heal to bring it down before hitting lockout
-    const needSlowHeal = !isEmergency && clientShameScore >= SHAME_CAUTION_LEVEL;
-
-    const targetDelay = needSlowHeal ? SLOW_HEAL_DELAY : FAST_HEAL_DELAY;
-    const remaining   = targetDelay - msSinceDmg;
-
-    if (remaining <= 0) {
-        _executeHeal();
-    } else {
-        pendingHealTimer = setTimeout(() => {
-            pendingHealTimer = null;
-            _executeHeal();
-        }, remaining);
-    }
+// ── Alias used by vl() damage display handler
+function fastHeal() {
+    _executeHeal();
 }
 
 // ── Per-frame shame + bull-helmet update (called from Cl)
@@ -4535,15 +4547,10 @@ function $l(e, t) {
             // Health went down → damage event → restart 120ms shame window
             if (t < prevHealth) {
                 lastDamageTime = performance.now();
-                // Cancel any pending heal – we need to re-evaluate timing from now
-                if (pendingHealTimer) {
-                    clearTimeout(pendingHealTimer);
-                    pendingHealTimer = null;
-                }
             }
-            // Queue heal if needed
+            // Fire heal immediately if needed
             if (v.health < (v.maxHealth || 100)) {
-                queueAtomicHeal();
+                _executeHeal();
             }
         }
     }
