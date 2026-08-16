@@ -3650,15 +3650,15 @@ let yt = 99999;
 
 function Sl() {
     et = !1, kl();
-    // Mark player dead immediately — prevents heal system firing post-death
     if (v) v.alive = false;
+    
+    // Reset heal & shame state
+    localShame = 0;
+    lastHitTime = 0;
+
     try {
         factorem.refreshAds([2], !0)
     } catch {}
-
-    // Reset heal state on death
-    healDamageTick = 0;
-    lastHealTick   = -1;
 
     ki.style.display = "none", Gn(), wt = {
         x: v.x,
@@ -4323,64 +4323,76 @@ function Kl(e, t, i) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   TICK-BASED AUTO-HEAL  (mirrors ttf reference script exactly)
-   ──────────────────────────────────────────────────────────────────
-   Reference logic (ttf ver 2.2):
-     damageTick = tick + 1       (set on each damage received)
-     healing    = health <= totalDmgPot  (approx: health <= 40%)
-     HEAL fires when:
-       (healing && shameCount < 7) || (tick - damageTick) > 0
-     heal(deficit) loops: for i < deficit step healAmount → place(foodId)
-   Key difference from previous implementation:
-     • heal fires ONCE per server tick, not every rAF frame
-     • damageTick delays heal by 1+ tick after damage (not wall-clock ms)
-     • uses v.shameCount directly (game already tracks this, no custom score)
-     • no bull-helmet complexity, no healLock, no microtask restore
-     • v.alive = false is now set in Sl() so heal never fires post-death
+   HIGH-SPEED ZERO-LATENCY AUTO-HEAL
    ══════════════════════════════════════════════════════════════════ */
 
-// ── Tick-based heal state (mirrors ttf reference ver 2.2)
-let serverTick    = 0;   // increments every server update cycle (Jl packet "a")
-let healDamageTick = 0;  // = serverTick+1 at time of last damage received
-let lastHealTick  = -1;  // last serverTick on which heal logic ran
+let lastHitTime = 0;
+let localShame = 0;
 
-// ── Send eat packets exactly like reference heal(deficit):
-//    for i < deficit step healAmount → place(foodId, null)
-//    place(id) = selectItem + attackPress + attackRelease + selectWeapon
-function runHealLogic() {
+// Instant multi-packet food consumption
+function eatFood(deficit) {
     if (!v || !v.alive) return;
-    const maxHP  = v.maxHealth || 100;
+    const maxHP = v.maxHealth || 100;
     if (v.health >= maxHP) return;
 
-    const deficit = maxHP - v.health;
+    // Detect equipped food (0 = Apple [20hp], 1 = Cookie [40hp], 2 = Cheese [30hp])
+    const foodId = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healAmt = ({ 0: 20, 1: 40, 2: 30 })[foodId] || 20;
+    const count = Math.max(1, Math.ceil(deficit / healAmt));
+    
+    // Get active weapon and attack angle to prevent angle desync
+    const curWep = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : 0;
+    const angle = (typeof Ci === "function") ? Ci() : 0;
 
-    // Mirror reference: "healing" flag ≈ health below predicted lethal damage
-    // Without full combat prediction, use 40% HP as the threshold — this
-    // mirrors the spirit of "health <= totalDmgPot" for the common case.
-    const healing = v.health <= maxHP * 0.40;
-
-    // Reference condition exactly:
-    // ((healing && myPlayer.shameCount < 7) || (tick - damageTick) > 0) && health < 100
-    // v.shameCount is maintained by the game engine (server-mirrored to client)
-    const shameOk      = (v.shameCount != null ? v.shameCount : 0) < 7;
-    const tickSinceHit = serverTick - healDamageTick;
-
-    if (!((healing && shameOk) || tickSinceHit > 0)) return;
-
-    // Mirror reference heal(value):
-    //   for (let i = 0; i < value; i += items.list[myPlayer.items[0]].heal) { place(foodId) }
-    const foodId  = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healAmt = ({ 0: 20, 1: 40, 2: 30 })[foodId] ?? 20;
-    const times   = Math.max(1, Math.ceil(deficit / healAmt));
-    const wpId    = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : null;
-
-    // Select food, eat N times, reselect weapon — exact equivalent of reference place()
+    // Fast packet burst: Select food -> Eat N times -> Reselect weapon
     O.send("z", foodId, false);
-    for (let i = 0; i < times; i++) {
-        O.send("F", 1, null);
-        O.send("F", 0, null);
+    for (let i = 0; i < count; i++) {
+        O.send("F", 1, angle);
+        O.send("F", 0, angle);
     }
-    if (wpId != null) O.send("z", wpId, true);
+    O.send("z", curWep, true);
+}
+
+// Continuous Tick / Bleed Check (Handles poison, lava, DPS, and missed ticks)
+function runHealLogic() {
+    if (!v || !v.alive) return;
+    const maxHP = v.maxHealth || 100;
+    
+    if (v.health < maxHP && localShame < 7) {
+        eatFood(maxHP - v.health);
+    }
+}
+
+// Immediate Reactive Hook: Intercepts raw health packets from the server
+function $l(e, t) {
+    r = Rt(e);
+    if (r) {
+        const prevHealth = r.health;
+        r.health = t;
+
+        if (r === v) {
+            if (t < prevHealth) {
+                const now = Date.now();
+                const timeSinceHit = now - lastHitTime;
+                lastHitTime = now;
+
+                // Track combat hit frequency
+                if (timeSinceHit <= 120) {
+                    localShame++;
+                } else {
+                    localShame = Math.max(0, localShame - 2);
+                }
+
+                // ZERO-DELAY HEAL: Eat immediately on the exact frame damage arrives
+                const maxHP = v.maxHealth || 100;
+                if (t < maxHP && localShame < 8) {
+                    eatFood(maxHP - t);
+                }
+            } else if (t >= 100) {
+                localShame = 0;
+            }
+        }
+    }
 }
 
 function $l(e, t) {
