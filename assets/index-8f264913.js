@@ -87,7 +87,7 @@ const ks = 1920,
     Ps = 4.5,
     Ds = 15,
     As = .9,
-    Es = 3e3,
+    Es = 0,
     Rs = 60,
     Bs = 35,
     Os = 3e3,
@@ -3645,28 +3645,20 @@ function xl(e) {
 
 function vl(e, t, i, s) {
     Pn.showText(e, t, 50, .18, 500, Math.abs(i), i >= 0 ? "#fff" : "#8ecc51");
-    // If damage was dealt at our player's coordinates, heal instantly
-    if (i < 0 && v && v.alive && M.getDistance(e, t, v.x, v.y) < 60) {
-        fastHeal();
-    }
 }
 let yt = 99999;
 
 function Sl() {
     et = !1, kl();
+    // Mark player dead immediately — prevents heal system firing post-death
+    if (v) v.alive = false;
     try {
         factorem.refreshAds([2], !0)
     } catch {}
 
-    // ── Full shame + heal state wipe on death ──
-    clientShameScore  = 0;
-    clientShameTimer  = 0;
-    lastDamageTime    = 0;
-    healLock          = false;
-    lastHealTimestamp = 0;
-    bullHelmetActive  = false;
-    previousHatId     = null;
-    bullHatCooldown   = 0;
+    // Reset heal state on death
+    healDamageTick = 0;
+    lastHealTick   = -1;
 
     ki.style.display = "none", Gn(), wt = {
         x: v.x,
@@ -3763,11 +3755,10 @@ function Tl(e) {
 let an = null;
 
 function Cl() {
-    // Per-frame shame timer + bull-helmet logic (K = delta ms from animation loop)
-    _updateShameAndHelmet(K);
-
-    if (v && v.alive && v.health < (v.maxHealth || 100)) {
-        queueAtomicHeal();
+    // Run heal logic once per server tick (not every rAF frame)
+    if (serverTick !== lastHealTick) {
+        lastHealTick = serverTick;
+        runHealLogic();
     }
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
@@ -3925,24 +3916,26 @@ function Cl() {
                         k.textBaseline = "middle";
                         k.textAlign = "right";
 
-                        // Pick colour based on state
+                        // Pick colour based on native shameCount (server-synced to client)
+                        const _sc = v.shameCount || 0;
+                        const _st = v.shameTimer  || 0;
                         let shameColor;
-                        if (clientShameTimer > 0) {
-                            // Shame hat active – pulse red/orange
+                        if (_st > 0) {
+                            // Shame lockout – pulse red/orange
                             shameColor = (Math.floor(performance.now() / 300) % 2 === 0)
                                 ? "#ff3333" : "#ff8800";
-                        } else if (clientShameScore >= 5) {
+                        } else if (_sc >= 5) {
                             shameColor = "#ff8800"; // warning orange
-                        } else if (clientShameScore >= 3) {
+                        } else if (_sc >= 3) {
                             shameColor = "#ffe033"; // yellow caution
                         } else {
                             shameColor = "#8ecc51"; // safe green
                         }
 
-                        // Display text: bare number, or countdown seconds when locked
-                        const shameText = clientShameTimer > 0
-                            ? `${Math.ceil(clientShameTimer / 1000)}s`
-                            : `${clientShameScore}`;
+                        // Display text: countdown seconds when locked, else bare count
+                        const shameText = _st > 0
+                            ? `${Math.ceil(_st / 1000)}s`
+                            : `${_sc}`;
 
                         // Measure name at the name font before switching
                         k.font = (r.nameScale || 30) + "px Hammersmith One";
@@ -4330,9 +4323,21 @@ function Kl(e, t, i) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   SHAME-BALANCED AUTO-HEAL + BULL HELMET SHAME DRAIN SYSTEM
+   TICK-BASED AUTO-HEAL  (mirrors ttf reference script exactly)
    ──────────────────────────────────────────────────────────────────
-   Shame rules (mirrored from server):
+   Reference logic (ttf ver 2.2):
+     damageTick = tick + 1       (set on each damage received)
+     healing    = health <= totalDmgPot  (approx: health <= 40%)
+     HEAL fires when:
+       (healing && shameCount < 7) || (tick - damageTick) > 0
+     heal(deficit) loops: for i < deficit step healAmount → place(foodId)
+   Key difference from previous implementation:
+     • heal fires ONCE per server tick, not every rAF frame
+     • damageTick delays heal by 1+ tick after damage (not wall-clock ms)
+     • uses v.shameCount directly (game already tracks this, no custom score)
+     • no bull-helmet complexity, no healLock, no microtask restore
+     • v.alive = false is now set in Sl() so heal never fires post-death
+   ══════════════════════════════════════════════════════════════════ */
      • Heal < 120ms after damage  → shame +1
      • Heal ≥ 120ms after damage  → shame -2  (clamped ≥ 0)
      • shame ≥ 7                  → 30s lockout, reset to 0
@@ -4350,196 +4355,48 @@ function Kl(e, t, i) {
    the swing animation and held item are NEVER interrupted.
    ══════════════════════════════════════════════════════════════════ */
 
-// ── Shame state
-let clientShameScore  = 0;
-let clientShameTimer  = 0;
-const SHAME_THRESHOLD        = 8;   // mirrors server: shameCount >= 8 → lockout
-const SHAME_HAT_DURATION     = 30000;
+// ── Tick-based heal state (mirrors ttf reference ver 2.2)
+let serverTick    = 0;   // increments every server update cycle (Jl packet "a")
+let healDamageTick = 0;  // = serverTick+1 at time of last damage received
+let lastHealTick  = -1;  // last serverTick on which heal logic ran
 
-// HP ratio below which we ignore shame and just heal
-const EMERGENCY_HP_RATIO     = 0.30;
-// Switch to slow heals at this shame level to avoid lockout
-const SHAME_CAUTION_LEVEL    = 5;
-
-// ── Damage timing
-let lastDamageTime    = 0;
-
-// ── General heal throttle  (reduced: 35ms → fast but not server-spammy)
-let healLock          = false;
-let lastHealTimestamp = 0;
-const HEAL_THROTTLE_MS        = 35;
-
-// ── Bull Helmet management
-const BULL_HELMET_ID         = 7;
-const ENEMY_SAFE_RANGE       = 620;
-let   bullHelmetActive       = false;
-let   previousHatId          = null;
-let   bullHatCooldown        = 0;
-const BULL_HAT_SWAP_COOLDOWN = 500;
-
-// ── Helpers
-function _currentHatId() {
-    if (!v || v.skinIndex == null) return null;
-    const hat = Ze[v.skinIndex];
-    return hat ? hat.id : null;
-}
-
-function _nearestEnemyDist() {
-    if (!v) return Infinity;
-    let best = Infinity;
-    for (let i = 0; i < E.length; i++) {
-        const p = E[i];
-        if (!p || !p.visible || p === v) continue;
-        if (v.team && p.team === v.team) continue;
-        const dx = p.x - v.x, dy = p.y - v.y;
-        const d  = Math.sqrt(dx * dx + dy * dy);
-        if (d < best) best = d;
-    }
-    return best;
-}
-
-function _inEnemyRange() {
-    return _nearestEnemyDist() < ENEMY_SAFE_RANGE;
-}
-
-// ── Hat swap helpers
-function _equipBullHelmet() {
-    if (bullHelmetActive || bullHatCooldown > 0 || !v || !v.alive) return;
-    previousHatId    = _currentHatId();
-    bullHelmetActive = true;
-    bullHatCooldown  = BULL_HAT_SWAP_COOLDOWN;
-    O.send("c", 0, BULL_HELMET_ID, false);
-}
-
-function _unequipBullHelmet() {
-    if (!bullHelmetActive || bullHatCooldown > 0) return;
-    bullHelmetActive = false;
-    bullHatCooldown  = BULL_HAT_SWAP_COOLDOWN;
-    if (previousHatId !== null && previousHatId !== BULL_HELMET_ID) {
-        O.send("c", 0, previousHatId, false);
-    } else {
-        O.send("c", 1, BULL_HELMET_ID, false);
-    }
-    previousHatId = null;
-}
-
-// ── Core heal executor — fires immediately, no queued timers
-function _executeHeal() {
-    if (!v || !v.alive || healLock) return;
-
-    const maxHP       = v.maxHealth || 100;
-    const isEmergency = (v.health / maxHP) <= EMERGENCY_HP_RATIO;
-
-    // Shame lockout: still enforced unless HP is critical
-    if (clientShameTimer > 0 && !isEmergency) return;
+// ── Send eat packets exactly like reference heal(deficit):
+//    for i < deficit step healAmount → place(foodId, null)
+//    place(id) = selectItem + attackPress + attackRelease + selectWeapon
+function runHealLogic() {
+    if (!v || !v.alive) return;
+    const maxHP  = v.maxHealth || 100;
     if (v.health >= maxHP) return;
 
-    const now = performance.now();
-    if (now - lastHealTimestamp < HEAL_THROTTLE_MS) return;
+    const deficit = maxHP - v.health;
 
-    // ── Update shame model at fire time ──
-    // Mirror server: hitTime is reset to 0 on the FIRST eat so shame only
-    // scores once per damage event. Without this reset every _executeHeal
-    // call within the 120ms window stacked shame separately — that's what
-    // was making the number fly up before the server was anywhere near 8.
-    if (lastDamageTime > 0) {
-        const msSinceDmg = now - lastDamageTime;
-        lastDamageTime = 0;   // ← consume the damage timestamp (server: hitTime = 0)
-        if (msSinceDmg < 120) {
-            clientShameScore++;
-        } else {
-            clientShameScore = Math.max(0, clientShameScore - 2);
-        }
-        if (clientShameScore >= SHAME_THRESHOLD) {
-            clientShameScore = 0;
-            clientShameTimer = SHAME_HAT_DURATION;
-            if (!isEmergency) return;  // honour lockout unless dying
-        }
-    }
+    // Mirror reference: "healing" flag ≈ health below predicted lethal damage
+    // Without full combat prediction, use 40% HP as the threshold — this
+    // mirrors the spirit of "health <= totalDmgPot" for the common case.
+    const healing = v.health <= maxHP * 0.40;
 
-    healLock          = true;
-    lastHealTimestamp = now;
+    // Reference condition exactly:
+    // ((healing && myPlayer.shameCount < 7) || (tick - damageTick) > 0) && health < 100
+    // v.shameCount is maintained by the game engine (server-mirrored to client)
+    const shameOk      = (v.shameCount != null ? v.shameCount : 0) < 7;
+    const tickSinceHit = serverTick - healDamageTick;
 
-    const foodId     = (v.items && v.items[0] != null) ? v.items[0] : 0;
-    const healValues = { 0: 20, 1: 40, 2: 30 };
-    const healAmount = healValues[foodId] || 20;
-    const deficit    = maxHP - v.health;
-    const itemsNeeded = Math.min(3, Math.ceil(deficit / healAmount));
+    if (!((healing && shameOk) || tickSinceHit > 0)) return;
 
-    // ── Snapshot client state — we restore it synchronously so the
-    //    render loop NEVER sees the buildIndex change (no swing interrupt)
-    const snapBuildIndex  = v.buildIndex;
-    const snapWeaponIndex = v.weaponIndex;
-    const wasWeaponMode   = snapBuildIndex < 0;
+    // Mirror reference heal(value):
+    //   for (let i = 0; i < value; i += items.list[myPlayer.items[0]].heal) { place(foodId) }
+    const foodId  = (v.items && v.items[0] != null) ? v.items[0] : 0;
+    const healAmt = ({ 0: 20, 1: 40, 2: 30 })[foodId] ?? 20;
+    const times   = Math.max(1, Math.ceil(deficit / healAmt));
+    const wpId    = (v.weapons && v.weapons[v.weaponIndex] != null) ? v.weapons[v.weaponIndex] : null;
 
-    // Briefly set client buildIndex so ke() doesn't send stale state
-    // during the microtask gap, then restore it right away
-    v.buildIndex = foodId;
-
-    // ── Fire eat packets to server ──
+    // Select food, eat N times, reselect weapon — exact equivalent of reference place()
     O.send("z", foodId, false);
-    for (let i = 0; i < itemsNeeded; i++) {
+    for (let i = 0; i < times; i++) {
         O.send("F", 1, null);
         O.send("F", 0, null);
     }
-
-    // ── Restore client state immediately (same sync call) ──
-    // This runs before the next requestAnimationFrame, so the player
-    // is never visually shown holding food / interrupted mid-swing
-    v.buildIndex = snapBuildIndex;
-
-    // ── Restore server-side selection via microtask ──
-    // queueMicrotask fires before any setTimeout/rAF, keeping the
-    // server in sync with one extra round-trip packet
-    queueMicrotask(() => {
-        if (!v || !v.alive) { healLock = false; return; }
-        if (wasWeaponMode) {
-            // restore weapon: send weapon ID with isWeapon=true
-            const wpId = v.weapons[snapWeaponIndex];
-            if (wpId != null) O.send("z", wpId, true);
-        } else {
-            // restore build item
-            O.send("z", snapBuildIndex, false);
-        }
-        healLock = false;
-    });
-}
-
-// ── Public entry — fires immediately, no pending timer mechanism
-function queueAtomicHeal() {
-    if (!v || !v.alive) return;
-    if (v.health >= (v.maxHealth || 100)) return;
-    _executeHeal();
-}
-
-// ── Alias used by vl() damage display handler
-function fastHeal() {
-    _executeHeal();
-}
-
-// ── Per-frame shame + bull-helmet update (called from Cl)
-function _updateShameAndHelmet(dtMs) {
-    if (clientShameTimer > 0) {
-        clientShameTimer = Math.max(0, clientShameTimer - dtMs);
-    }
-    if (bullHatCooldown > 0) {
-        bullHatCooldown = Math.max(0, bullHatCooldown - dtMs);
-    }
-
-    if (!v || !v.alive) {
-        if (bullHelmetActive) _unequipBullHelmet();
-        return;
-    }
-
-    const inRange = _inEnemyRange();
-
-    if (inRange) {
-        if (bullHelmetActive) _unequipBullHelmet();
-    } else {
-        const wantHelmet = clientShameScore > 0 && clientShameTimer <= 0;
-        if (wantHelmet && !bullHelmetActive)      _equipBullHelmet();
-        else if (!wantHelmet && bullHelmetActive) _unequipBullHelmet();
-    }
+    if (wpId != null) O.send("z", wpId, true);
 }
 
 function $l(e, t) {
@@ -4548,20 +4405,16 @@ function $l(e, t) {
         const prevHealth = r.health;
         r.health = t;
 
-        if (r === v) {
-            // Health went down → damage event → restart 120ms shame window
-            if (t < prevHealth) {
-                lastDamageTime = performance.now();
-            }
-            // Fire heal immediately if needed
-            if (v.health < (v.maxHealth || 100)) {
-                _executeHeal();
-            }
+        if (r === v && t < prevHealth) {
+            // Damage received — mirror reference: damageTick = tick + 1
+            // This delays heal by at least 1 server tick (prevents shame stacking)
+            healDamageTick = serverTick + 1;
         }
     }
 }
 
 function Jl(e) {
+    serverTick++; // advance game tick — heal logic gates on this
     const t = Date.now();
     for (var i = 0; i < E.length; ++i) E[i].forcePos = !E[i].visible, E[i].visible = !1;
     for (var i = 0; i < e.length;) r = Rt(e[i]), r && (r.t1 = r.t2 === void 0 ? t : r.t2, r.t2 = t, r.x1 = r.x, r.y1 = r.y, r.x2 = e[i + 1], r.y2 = e[i + 2], r.d1 = r.d2 === void 0 ? e[i + 3] : r.d2, r.d2 = e[i + 3], r.dt = 0, r.buildIndex = e[i + 4], r.weaponIndex = e[i + 5], r.weaponVariant = e[i + 6], r.team = e[i + 7], r.isLeader = e[i + 8], r.skinIndex = e[i + 9], r.tailIndex = e[i + 10], r.iconIndex = e[i + 11], r.zIndex = e[i + 12], r.visible = !0), i += 13
