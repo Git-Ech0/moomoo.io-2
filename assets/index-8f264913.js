@@ -3732,6 +3732,7 @@ function Tl(e) {
 let an = null;
 
 function Cl() {
+    triggerAutoHeal();
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
             qt = He;
@@ -4245,8 +4246,43 @@ function Kl(e, t, i) {
     v && (v[e] = t, i && Zn())
 }
 
+/* ── AUTO-HEAL SYSTEM ── */
+let lastHealTime = 0;
+const HEAL_COOLDOWN = 0; // 130ms delay prevents the server's anti-spam shame penalty
+
+function triggerAutoHeal() {
+    if (!v || !v.alive || v.health >= v.maxHealth) return;
+    
+    const now = Date.now();
+    if (now - lastHealTime < HEAL_COOLDOWN) return;
+
+    // Food is always the first item in the player's unlocked inventory (v.items[0])
+    const foodId = v.items[0];
+    const foodItem = b.list[foodId];
+
+    // Ensure we have enough food points in our inventory to consume it
+    if (!foodItem || v.food < foodItem.req[1]) return;
+
+    lastHealTime = now;
+
+    // 1. Select food slot
+    O.send("z", foodId, false);
+    // 2. Consume / Eat
+    O.send("F", 1, null);
+    O.send("F", 0, null);
+    // 3. Immediately switch back to your active weapon
+    O.send("z", v.weapons[v.weaponIndex], true);
+}
+
 function $l(e, t) {
-    r = Rt(e), r && (r.health = t)
+    r = Rt(e);
+    if (r) {
+        r.health = t;
+        // Instantly trigger heal the millisecond our player takes damage
+        if (r === v && v.health < v.maxHealth) {
+            triggerAutoHeal();
+        }
+    }
 }
 
 function Jl(e) {
