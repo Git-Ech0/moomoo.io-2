@@ -3755,11 +3755,7 @@ function Tl(e) {
 let an = null;
 
 function Cl() {
-    // Run heal logic once per server tick (not every rAF frame)
-    if (serverTick !== lastHealTick) {
-        lastHealTick = serverTick;
-        runHealLogic();
-    }
+    runHealLogic();
     {
         if (v && (!qt || He - qt >= 1e3 / y.clientSendRate)) {
             qt = He;
@@ -4393,7 +4389,6 @@ function $l(e, t) {
 }
 
 function Jl(e) {
-    serverTick++; // advance game tick — heal logic gates on this
     const t = Date.now();
     for (var i = 0; i < E.length; ++i) E[i].forcePos = !E[i].visible, E[i].visible = !1;
     for (var i = 0; i < e.length;) r = Rt(e[i]), r && (r.t1 = r.t2 === void 0 ? t : r.t2, r.t2 = t, r.x1 = r.x, r.y1 = r.y, r.x2 = e[i + 1], r.y2 = e[i + 2], r.d1 = r.d2 === void 0 ? e[i + 3] : r.d2, r.d2 = e[i + 3], r.dt = 0, r.buildIndex = e[i + 4], r.weaponIndex = e[i + 5], r.weaponVariant = e[i + 6], r.team = e[i + 7], r.isLeader = e[i + 8], r.skinIndex = e[i + 9], r.tailIndex = e[i + 10], r.iconIndex = e[i + 11], r.zIndex = e[i + 12], r.visible = !0), i += 13
