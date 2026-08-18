@@ -4501,14 +4501,9 @@ window.config = y;
     }
 
     // ── Playback ──────────────────────────────────────────────────────
-    // Each lyric line gets its own independent setTimeout scheduled at
-    // its exact LRC timestamp from play-start.  No queue, no drain, no
-    // drift — every line fires exactly when its bracket says it should.
-    const SKIP = /^\(\s*(intro|outro)\s*\)$/i;
-
     function startPlayback() {
         if (!lyrics.length) return;
-        stopPlayback();                      // cancel any previous session cleanly
+        stopPlayback();
         isPlaying = true;
         playStart = performance.now();
         applyPlayState();
@@ -4517,10 +4512,7 @@ window.config = y;
             var delayMs = Math.max(0, line.time * 1000);
             var tid = setTimeout(function() {
                 if (!isPlaying) return;
-                // Send the raw text to game chat — skip meta-labels only
-                if (line.text && !SKIP.test(line.text)) {
-                    on(line.text);           // game's own chat send, always in scope
-                }
+                on(line.text);
                 activateLine(idx);
             }, delayMs);
             lineTimers.push(tid);
