@@ -4466,30 +4466,27 @@ window.selectSkinColor = hl;
 window.changeStoreIndex = sl;
 window.config = y;
 
-
 /* ════════════════════════════════════════════════════════════════════
-   ◈ CLEAN LYRIC SYNC ENGINE (Simplified & Filter-Bypassed)
+   ◈ CLEAN LYRIC SYNC ENGINE (ASCII Sanitized & Clean Playback)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    // ── Bypass MooMoo's silent chat blacklist ──
-    function bypassFilter(text) {
-        var banned = ["kill", "die", "baby", "touch", "sex", "rape"];
-        var result = text;
-        banned.forEach(function(word) {
-            var regex = new RegExp(word, "gi");
-            result = result.replace(regex, function(match) {
-                // Inserts an invisible zero-width space inside the word
-                return match[0] + "\u200B" + match.slice(1);
-            });
-        });
-        return result;
+    // Converts Unicode curly apostrophes and accented characters into pure ASCII
+    function sanitizeForMooMoo(text) {
+        if (!text) return "";
+        return text
+            .replace(/[\u2018\u2019]/g, "'") // Convert smart/curly apostrophes to standard '
+            .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes to "
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Convert é -> e, à -> a, etc.
+            .replace(/[^\x20-\x7E]/g, "")    // Strip any remaining non-ASCII characters
+            .trim()
+            .slice(0, 30);                    // Max chat length
     }
 
-    // ── Simple, robust LRC parser ──
+    // Parses any [mm:ss.xx] or [mm:ss.xxx] format
     function parseLRC(raw) {
         var out = [];
         var lines = raw.split("\n");
@@ -4501,7 +4498,7 @@ window.config = y;
             var min = parseFloat(m[1]);
             var sec = parseFloat(m[2]);
             var text = m[3].trim();
-            if (text) {
+            if (text && !text.startsWith("(") && !text.endsWith(")")) { // skips "(Intro)" / "(Outro)"
                 out.push({ time: (min * 60 + sec) * 1000, text: text });
             }
         });
@@ -4509,7 +4506,6 @@ window.config = y;
         return out.sort(function(a, b) { return a.time - b.time; });
     }
 
-    // ── Direct Playback ──
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
@@ -4520,19 +4516,18 @@ window.config = y;
             var tid = setTimeout(function() {
                 if (!isPlaying) return;
 
-                // 1. Update UI
                 activateLine(idx);
 
-                // 2. Format and Send (cleaned of blacklist & chunked to 30 chars)
-                var safeText = bypassFilter(line.text).slice(0, 30);
-                on(safeText);
-
+                var cleanText = sanitizeForMooMoo(line.text);
+                if (cleanText.length > 0) {
+                    on(cleanText);
+                }
             }, Math.max(0, line.time));
 
             lineTimers.push(tid);
         });
 
-        var totalDuration = lyrics[lyrics.length - 1].time + 2000;
+        var totalDuration = lyrics[lyrics.length - 1].time + 2500;
         var endTid = setTimeout(stopPlayback, totalDuration);
         lineTimers.push(endTid);
     }
@@ -4566,16 +4561,13 @@ window.config = y;
         });
     }
 
-    // ── DOM Construction ──
+    // ── UI Setup ──
     var panel = document.createElement("div");
     panel.id = "lsp-panel";
     panel.innerHTML = [
-        '<div id="lsp-hdr">',
-        '  <div id="lsp-htitle"><span id="lsp-dot"></span><span>LYRIC SYNC</span></div>',
-        '  <button id="lsp-x">&#x2715;</button>',
-        '</div>',
+        '<div id="lsp-hdr"><div id="lsp-htitle"><span id="lsp-dot"></span><span>LYRIC SYNC</span></div><button id="lsp-x">&#x2715;</button></div>',
         '<div id="lsp-body">',
-        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] LRC here..."></textarea>',
+        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] lyrics here..."></textarea>',
         '  <div id="lsp-btns">',
         '    <button id="lsp-load">LOAD</button>',
         '    <button id="lsp-play">PLAY</button>',
@@ -4588,18 +4580,18 @@ window.config = y;
 
     var style = document.createElement("style");
     style.textContent = `
-        #lsp-panel { position:fixed; top:80px; right:20px; width:300px; height:400px; background:#0a0e14; border:1px solid #00cfff; border-radius:6px; z-index:999999; display:flex; flex-direction:column; font-family:sans-serif; color:#fff; overflow:hidden; }
-        #lsp-hdr { display:flex; justify-content:space-between; align-items:center; background:#111822; padding:8px 10px; cursor:grab; border-bottom:1px solid #1a2636; }
+        #lsp-panel { position:fixed; top:80px; right:20px; width:300px; height:390px; background:#0a0e14; border:1px solid #00cfff; border-radius:6px; z-index:999999; display:flex; flex-direction:column; font-family:sans-serif; color:#fff; overflow:hidden; }
+        #lsp-hdr { display:flex; justify-content:space-between; align-items:center; background:#111822; padding:8px 10px; cursor:grab; border-bottom:1px solid #1a2636; user-select:none; }
         #lsp-htitle { display:flex; align-items:center; gap:8px; font-weight:bold; font-size:12px; color:#00cfff; }
         #lsp-dot { width:8px; height:8px; border-radius:50%; background:#444; display:inline-block; }
         #lsp-dot.lsd-on { background:#00ff7f; box-shadow:0 0 8px #00ff7f; }
         #lsp-x { background:none; border:none; color:#777; cursor:pointer; font-size:14px; }
         #lsp-body { padding:10px; display:flex; flex-direction:column; gap:8px; flex:1; overflow:hidden; }
-        #lsp-ta { height:80px; background:#05070a; border:1px solid #1a2636; color:#a0c0d0; padding:6px; font-family:monospace; font-size:10px; resize:none; outline:none; }
+        #lsp-ta { height:75px; background:#05070a; border:1px solid #1a2636; color:#a0c0d0; padding:6px; font-family:monospace; font-size:10px; resize:none; outline:none; }
         #lsp-btns { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; }
         #lsp-btns button { background:#111822; border:1px solid #00cfff; color:#00cfff; padding:5px 0; cursor:pointer; font-size:11px; font-weight:bold; }
         #lsp-btns button:hover { background:#00cfff; color:#000; }
-        #lsp-cur { background:#05070a; border-left:3px solid #00cfff; padding:6px; font-size:12px; color:#00ff7f; min-height:20px; word-break:break-word; }
+        #lsp-cur { background:#05070a; border-left:3px solid #00cfff; padding:6px; font-size:12px; color:#00ff7f; min-height:18px; word-break:break-word; }
         #lsp-q { flex:1; overflow-y:auto; font-size:11px; color:#556; line-height:1.6; }
         .lq-row.lq-active { color:#00ff7f; font-weight:bold; }
         .lq-row.lq-past { color:#334; }
@@ -4633,7 +4625,7 @@ window.config = y;
     elStopBtn.onclick = stopPlayback;
     document.getElementById("lsp-x").onclick = function() { panel.style.display = "none"; };
 
-    // ── Drag panel ──
+    // Drag panel
     var drag = false, dx = 0, dy = 0;
     elHdr.onmousedown = function(e) {
         if (e.target.id === "lsp-x") return;
@@ -4649,7 +4641,7 @@ window.config = y;
     };
     document.onmouseup = function() { drag = false; };
 
-    // ── Keybind 'L' Toggle ──
+    // Keybind 'L' Toggle
     window.addEventListener("keydown", function(e) {
         if ((e.key === "l" || e.key === "L") && document.activeElement !== elTextarea) {
             panel.style.display = (panel.style.display === "none") ? "flex" : "none";
