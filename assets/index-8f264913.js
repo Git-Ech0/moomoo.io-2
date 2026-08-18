@@ -4467,22 +4467,83 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ AUTO-CHUNKING LYRIC SYNC ENGINE (30-Char Smart Splitter)
+   ◈ SMART LYRIC SYNC ENGINE (Single-Char Visual Leetspeak Bypass)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    // ── 1. Sanitize to pure ASCII (Fixes silent server drops) ──
+    // Unique base roots only — no nested duplicates
+    var CURSE_ROOTS = [
+        "fuck", "shit", "bitch", "nigga", "nigger", "cunt", "dick",
+        "cock", "pussy", "slut", "whore", "bastard", "damn", "crap",
+        "kill", "rape", "porn", "pedo", "fag", "faggot", "tits"
+    ];
+
+    // Priority-ordered visual substitutions (highest similarity first)
+    var VISUAL_RULES = [
+        { match: /i/i, sub: '1' }, // Highest visual match (k1ll, sh1t, b1tch, d1ck, n1gga)
+        { match: /s/i, sub: '$' }, // (pu$sy, a$s, $lut, ba$tard)
+        { match: /o/i, sub: '0' }, // (c0ck, wh0re, p0rn, ped0)
+        { match: /u/i, sub: 'v' }, // (fvck, cvnt)
+        { match: /e/i, sub: '3' }, // (r3pe, p3do)
+        { match: /a/i, sub: '@' }, // (d@mn, cr@p, f@g)
+        { match: /t/i, sub: '7' },
+        { match: /l/i, sub: '1' },
+        { match: /b/i, sub: '8' }
+    ];
+
+    // Replaces EXACTLY ONE letter in the curse word with its best visual lookalike
+    function leetifyCurseWord(word) {
+        if (!word) return word;
+
+        for (var i = 0; i < VISUAL_RULES.length; i++) {
+            if (VISUAL_RULES[i].match.test(word)) {
+                // Replaces only the first matching letter
+                return word.replace(VISUAL_RULES[i].match, VISUAL_RULES[i].sub);
+            }
+        }
+        return word;
+    }
+
+    // Scans text and applies single-character leetify to cursed roots
+    function filterBadWords(text) {
+        if (!text) return "";
+        var result = text;
+
+        // 1. Strict isolated check for "ass" (never touches pass, class, grass, assume)
+        result = result.replace(/\b(ass|asses|asshole|assholes)\b/gi, function(match) {
+            return leetifyCurseWord(match);
+        });
+
+        // 2. Strict isolated check for "die" (never touches diet, diesel)
+        result = result.replace(/\b(die|dies|died|dying)\b/gi, function(match) {
+            return leetifyCurseWord(match);
+        });
+
+        // 3. Process all unique curse roots and their natural word extensions
+        CURSE_ROOTS.forEach(function(root) {
+            var reg = new RegExp("\\b" + root + "\\w*\\b", "gi");
+            result = result.replace(reg, function(match) {
+                return leetifyCurseWord(match);
+            });
+        });
+
+        return result;
+    }
+
+    // ── 1. Sanitize to pure ASCII & Clean Quotes ──
     function sanitizeText(text) {
         if (!text) return "";
-        return text
+        var clean = text
             .replace(/[\u2018\u2019]/g, "'") // Convert curly apostrophes to '
             .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes to "
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // é -> e, à -> a, etc.
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // é -> e, etc.
             .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII characters
             .trim();
+
+        return filterBadWords(clean);
     }
 
     // ── 2. Smart Word-Boundary Splitter (Under 30 chars per chunk) ──
@@ -4495,7 +4556,6 @@ window.config = y;
         for (var i = 0; i < words.length; i++) {
             var word = words[i];
 
-            // If a single word is over 30 chars, hard slice it
             while (word.length > maxLen) {
                 if (current) { chunks.push(current); current = ""; }
                 chunks.push(word.slice(0, maxLen));
@@ -4520,7 +4580,6 @@ window.config = y;
         var reg = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\](.*)/;
         var temp = [];
 
-        // Parse valid lines
         rawLines.forEach(function(line) {
             var m = line.trim().match(reg);
             if (!m) return;
@@ -4534,7 +4593,6 @@ window.config = y;
 
         temp.sort(function(a, b) { return a.time - b.time; });
 
-        // Process chunking and sub-timings
         var out = [];
         for (var i = 0; i < temp.length; i++) {
             var item = temp[i];
@@ -4543,11 +4601,8 @@ window.config = y;
             if (chunks.length <= 1) {
                 out.push({ time: item.time, text: chunks[0] });
             } else {
-                // Determine available time window until next line
                 var nextTime = (i + 1 < temp.length) ? temp[i + 1].time : item.time + 3000;
                 var windowDuration = Math.max(1000, nextTime - item.time);
-                
-                // Distribute chunks evenly, capping interval between 1.0s and 1.5s
                 var step = Math.min(1500, windowDuration / chunks.length);
 
                 for (var c = 0; c < chunks.length; c++) {
@@ -4562,7 +4617,7 @@ window.config = y;
         return out;
     }
 
-    // ── 4. Direct Playback Engine ──
+    // ── 4. Playback Engine ──
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
@@ -4574,7 +4629,7 @@ window.config = y;
                 if (!isPlaying) return;
 
                 activateLine(idx);
-                on(line.text); // Sends cleanly to MooMoo chat
+                on(line.text); // Sends to MooMoo chat
 
             }, Math.max(0, line.time));
 
