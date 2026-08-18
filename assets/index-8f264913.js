@@ -4467,45 +4467,102 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ CLEAN LYRIC SYNC ENGINE (ASCII Sanitized & Clean Playback)
+   ◈ AUTO-CHUNKING LYRIC SYNC ENGINE (30-Char Smart Splitter)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    // Converts Unicode curly apostrophes and accented characters into pure ASCII
-    function sanitizeForMooMoo(text) {
+    // ── 1. Sanitize to pure ASCII (Fixes silent server drops) ──
+    function sanitizeText(text) {
         if (!text) return "";
         return text
-            .replace(/[\u2018\u2019]/g, "'") // Convert smart/curly apostrophes to standard '
+            .replace(/[\u2018\u2019]/g, "'") // Convert curly apostrophes to '
             .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes to "
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Convert é -> e, à -> a, etc.
-            .replace(/[^\x20-\x7E]/g, "")    // Strip any remaining non-ASCII characters
-            .trim()
-            .slice(0, 30);                    // Max chat length
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // é -> e, à -> a, etc.
+            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII characters
+            .trim();
     }
 
-    // Parses any [mm:ss.xx] or [mm:ss.xxx] format
-    function parseLRC(raw) {
-        var out = [];
-        var lines = raw.split("\n");
-        var reg = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\](.*)/;
+    // ── 2. Smart Word-Boundary Splitter (Under 30 chars per chunk) ──
+    function splitIntoChunks(text, maxLen) {
+        if (!text || text.length <= maxLen) return [text];
+        var words = text.split(/\s+/);
+        var chunks = [];
+        var current = "";
 
-        lines.forEach(function(line) {
+        for (var i = 0; i < words.length; i++) {
+            var word = words[i];
+
+            // If a single word is over 30 chars, hard slice it
+            while (word.length > maxLen) {
+                if (current) { chunks.push(current); current = ""; }
+                chunks.push(word.slice(0, maxLen));
+                word = word.slice(maxLen);
+            }
+            if (!word) continue;
+
+            if ((current ? current + " " + word : word).length <= maxLen) {
+                current = current ? current + " " + word : word;
+            } else {
+                if (current) chunks.push(current);
+                current = word;
+            }
+        }
+        if (current) chunks.push(current);
+        return chunks;
+    }
+
+    // ── 3. LRC Parser with Automatic Intermediate Timing ──
+    function parseLRC(raw) {
+        var rawLines = raw.split("\n");
+        var reg = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\](.*)/;
+        var temp = [];
+
+        // Parse valid lines
+        rawLines.forEach(function(line) {
             var m = line.trim().match(reg);
             if (!m) return;
             var min = parseFloat(m[1]);
             var sec = parseFloat(m[2]);
-            var text = m[3].trim();
-            if (text && !text.startsWith("(") && !text.endsWith(")")) { // skips "(Intro)" / "(Outro)"
-                out.push({ time: (min * 60 + sec) * 1000, text: text });
+            var text = sanitizeText(m[3]);
+            if (text && !text.startsWith("(") && !text.endsWith(")")) {
+                temp.push({ time: (min * 60 + sec) * 1000, text: text });
             }
         });
 
-        return out.sort(function(a, b) { return a.time - b.time; });
+        temp.sort(function(a, b) { return a.time - b.time; });
+
+        // Process chunking and sub-timings
+        var out = [];
+        for (var i = 0; i < temp.length; i++) {
+            var item = temp[i];
+            var chunks = splitIntoChunks(item.text, 30);
+
+            if (chunks.length <= 1) {
+                out.push({ time: item.time, text: chunks[0] });
+            } else {
+                // Determine available time window until next line
+                var nextTime = (i + 1 < temp.length) ? temp[i + 1].time : item.time + 3000;
+                var windowDuration = Math.max(1000, nextTime - item.time);
+                
+                // Distribute chunks evenly, capping interval between 1.0s and 1.5s
+                var step = Math.min(1500, windowDuration / chunks.length);
+
+                for (var c = 0; c < chunks.length; c++) {
+                    out.push({
+                        time: item.time + (c * step),
+                        text: chunks[c]
+                    });
+                }
+            }
+        }
+
+        return out;
     }
 
+    // ── 4. Direct Playback Engine ──
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
@@ -4517,17 +4574,14 @@ window.config = y;
                 if (!isPlaying) return;
 
                 activateLine(idx);
+                on(line.text); // Sends cleanly to MooMoo chat
 
-                var cleanText = sanitizeForMooMoo(line.text);
-                if (cleanText.length > 0) {
-                    on(cleanText);
-                }
             }, Math.max(0, line.time));
 
             lineTimers.push(tid);
         });
 
-        var totalDuration = lyrics[lyrics.length - 1].time + 2500;
+        var totalDuration = lyrics[lyrics.length - 1].time + 2000;
         var endTid = setTimeout(stopPlayback, totalDuration);
         lineTimers.push(endTid);
     }
@@ -4561,13 +4615,13 @@ window.config = y;
         });
     }
 
-    // ── UI Setup ──
+    // ── 5. UI Setup ──
     var panel = document.createElement("div");
     panel.id = "lsp-panel";
     panel.innerHTML = [
         '<div id="lsp-hdr"><div id="lsp-htitle"><span id="lsp-dot"></span><span>LYRIC SYNC</span></div><button id="lsp-x">&#x2715;</button></div>',
         '<div id="lsp-body">',
-        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] lyrics here..."></textarea>',
+        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] LRC here..."></textarea>',
         '  <div id="lsp-btns">',
         '    <button id="lsp-load">LOAD</button>',
         '    <button id="lsp-play">PLAY</button>',
@@ -4614,7 +4668,7 @@ window.config = y;
         elQueue.innerHTML = lyrics.map(function(l) {
             return '<div class="lq-row">' + l.text + '</div>';
         }).join("");
-        elCurrentLine.textContent = lyrics.length ? "— ready —" : "No timestamps found";
+        elCurrentLine.textContent = lyrics.length ? (lyrics.length + " lines loaded") : "No timestamps found";
     };
 
     elPlayBtn.onclick = function() {
