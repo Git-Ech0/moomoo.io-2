@@ -4465,3 +4465,591 @@ window.showItemInfo = $;
 window.selectSkinColor = hl;
 window.changeStoreIndex = sl;
 window.config = y;
+
+/* ════════════════════════════════════════════════════════════════════
+   ◈ LYRIC SYNC PANEL  —  toggle [ L ]  |  drag header  |  resize ⌟
+   ════════════════════════════════════════════════════════════════════ */
+;(function () {
+
+    // ── State ─────────────────────────────────────────────────────────
+    let lyrics       = [];       // [{ time: number, text: string }]
+    let isPlaying    = false;
+    let startEpoch   = 0;        // performance.now() when play pressed
+    let timerIds     = [];       // all pending setTimeout IDs
+    let rafId        = null;
+
+    // ── LRC parser ────────────────────────────────────────────────────
+    // Accepts [MM:SS.mmm] or [MM:SS.mm] tags; captures everything after.
+    function parseLRC(raw) {
+        const RE = /\[(\d{1,2}):(\d{2})\.(\d{2,3})\]\s*(.*)/;
+        const out = [];
+        for (const line of raw.split('\n')) {
+            const m = line.trim().match(RE);
+            if (!m) continue;
+            const ms = (m[3].length === 2) ? +m[3] * 10 : +m[3];
+            out.push({
+                time : +m[1] * 60 + +m[2] + ms / 1000,
+                text : m[4].trim()
+            });
+        }
+        return out.sort((a, b) => a.time - b.time);
+    }
+
+    // ── Chat send ─────────────────────────────────────────────────────
+    // Skips structural labels like (Intro) / (Outro) that are not real lyrics.
+    const SKIP_RE = /^\(\s*(intro|outro)\s*\)$/i;
+
+    function sendLine(text) {
+        if (!text || SKIP_RE.test(text)) return;
+        on(text);   // game's own chat send function – already in scope
+    }
+
+    // ── Playback engine ───────────────────────────────────────────────
+    function startPlayback() {
+        if (!lyrics.length) return;
+        stopPlayback();
+        isPlaying  = true;
+        startEpoch = performance.now();
+        applyPlayState();
+
+        lyrics.forEach(entry => {
+            const id = setTimeout(() => {
+                sendLine(entry.text);
+                activateLine(entry);
+            }, entry.time * 1000);
+            timerIds.push(id);
+        });
+
+        // Auto-stop after the last line + 3 s
+        const endId = setTimeout(
+            stopPlayback,
+            (lyrics[lyrics.length - 1].time + 3) * 1000
+        );
+        timerIds.push(endId);
+
+        // Progress ticker
+        (function tick() {
+            if (!isPlaying) return;
+            const elapsed = (performance.now() - startEpoch) / 1000;
+            renderProgress(elapsed);
+            rafId = requestAnimationFrame(tick);
+        })();
+    }
+
+    function stopPlayback() {
+        isPlaying = false;
+        timerIds.forEach(clearTimeout);
+        timerIds = [];
+        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        applyPlayState();
+        renderProgress(0);
+        elCurrentLine.textContent = lyrics.length ? '— ready to play —' : 'Paste LRC lyrics above, then LOAD';
+        document.querySelectorAll('.lq-row').forEach(el => {
+            el.classList.remove('lq-active', 'lq-past');
+        });
+    }
+
+    function applyPlayState() {
+        if (isPlaying) {
+            elPlayBtn.textContent  = '▶ LIVE';
+            elPlayBtn.classList.add('lsp-live');
+            elStatusDot.classList.add('lsd-on');
+        } else {
+            elPlayBtn.textContent  = '▶ PLAY';
+            elPlayBtn.classList.remove('lsp-live');
+            elStatusDot.classList.remove('lsd-on');
+        }
+    }
+
+    function activateLine(entry) {
+        const idx  = lyrics.indexOf(entry);
+        elCurrentLine.textContent = entry.text || '♩';
+
+        const rows = elQueue.querySelectorAll('.lq-row');
+        rows.forEach((row, i) => {
+            row.classList.remove('lq-active', 'lq-past');
+            if      (i < idx)  row.classList.add('lq-past');
+            else if (i === idx) {
+                row.classList.add('lq-active');
+                row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
+        });
+    }
+
+    function renderProgress(s) {
+        const m  = Math.floor(s / 60);
+        const ss = Math.floor(s % 60).toString().padStart(2, '0');
+        elProgress.textContent = `${m}:${ss}`;
+    }
+
+    // ── DOM injection ─────────────────────────────────────────────────
+    const panel = document.createElement('div');
+    panel.id    = 'lsp-panel';
+    panel.innerHTML = `
+<div id="lsp-hdr">
+  <div id="lsp-htitle">
+    <span id="lsp-dot"></span>
+    <span>&#9672;&nbsp;LYRIC&nbsp;SYNC</span>
+  </div>
+  <div id="lsp-hright">
+    <span id="lsp-hint">[&nbsp;L&nbsp;]</span>
+    <button id="lsp-x">&#x2715;</button>
+  </div>
+</div>
+<div id="lsp-body">
+  <div id="lsp-ta-wrap">
+    <textarea id="lsp-ta"
+      placeholder="[00:00.000] (Intro)&#10;[00:01.350] First lyric line...&#10;[00:04.100] Second line...&#10;[01:03.400] Another line..."></textarea>
+    <div id="lsp-ta-corner"></div>
+  </div>
+  <div id="lsp-btns">
+    <button id="lsp-load">&#x2B06;&nbsp;LOAD</button>
+    <button id="lsp-play">&#x25B6;&nbsp;PLAY</button>
+    <button id="lsp-stop">&#x25A0;&nbsp;STOP</button>
+  </div>
+  <div id="lsp-meta">
+    <span id="lsp-count">no lyrics loaded</span>
+    <span id="lsp-prog">0:00</span>
+  </div>
+  <div id="lsp-now">
+    <div id="lsp-nowlabel">NOW</div>
+    <div id="lsp-cur">Paste LRC lyrics above, then LOAD</div>
+  </div>
+  <div id="lsp-divider">
+    <span>QUEUE</span>
+    <div id="lsp-divline"></div>
+  </div>
+  <div id="lsp-q"></div>
+</div>
+<div id="lsp-rzh" title="Drag to resize">&#x231F;</div>
+`;
+
+    // ── CSS ───────────────────────────────────────────────────────────
+    const styleEl = document.createElement('style');
+    styleEl.textContent = `
+/* ── Panel shell ── */
+#lsp-panel {
+    position: fixed;
+    top: 72px;
+    right: 18px;
+    width: 348px;
+    min-width: 240px;
+    height: 478px;
+    min-height: 280px;
+    background: #05090f;
+    border: 1px solid #0d2640;
+    border-top: 2px solid #00cfff;
+    border-radius: 6px;
+    box-shadow: 0 0 48px rgba(0,207,255,.11),
+                0 0 0 1px rgba(0,207,255,.04) inset,
+                0 16px 64px rgba(0,0,0,.8);
+    font-family: 'Courier New', Courier, monospace;
+    z-index: 999999;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+}
+/* scanline overlay */
+#lsp-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 3px,
+        rgba(0,207,255,.007) 3px,
+        rgba(0,207,255,.007) 4px
+    );
+    pointer-events: none;
+    border-radius: 6px;
+    z-index: 0;
+}
+/* corner accent */
+#lsp-panel::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 40px; height: 2px;
+    background: linear-gradient(90deg, #00cfff, transparent);
+    pointer-events: none;
+}
+
+/* ── Header ── */
+#lsp-hdr {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 11px;
+    background: linear-gradient(90deg, #091624 0%, #060f1a 100%);
+    border-bottom: 1px solid #0d2640;
+    cursor: grab;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+}
+#lsp-hdr:active { cursor: grabbing; }
+
+#lsp-htitle {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: #00cfff;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 3.5px;
+    text-shadow: 0 0 14px rgba(0,207,255,.9);
+}
+
+/* status dot */
+#lsp-dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #0d2a3a;
+    border: 1px solid #1a4060;
+    transition: background .3s, box-shadow .3s;
+    flex-shrink: 0;
+}
+.lsd-on {
+    background: #00ff7f !important;
+    border-color: #00ff7f !important;
+    box-shadow: 0 0 6px #00ff7f, 0 0 18px rgba(0,255,127,.35) !important;
+    animation: lsp-blink 1.1s infinite;
+}
+@keyframes lsp-blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .28; }
+}
+
+#lsp-hright {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+#lsp-hint {
+    font-size: 8.5px;
+    color: #1a3a56;
+    letter-spacing: 1px;
+}
+#lsp-x {
+    background: none;
+    border: none;
+    color: #1e3e5a;
+    font-size: 11px;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 2px;
+    transition: color .2s, background .2s;
+    line-height: 1;
+}
+#lsp-x:hover { color: #ff2244; background: rgba(255,34,68,.08); }
+
+/* ── Body ── */
+#lsp-body {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 9px 10px 10px;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    z-index: 1;
+}
+
+/* textarea wrapper */
+#lsp-ta-wrap {
+    position: relative;
+    flex-shrink: 0;
+}
+#lsp-ta {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    height: 88px;
+    background: #02060d;
+    border: 1px solid #0a1e32;
+    border-left: 2px solid rgba(0,207,255,.22);
+    color: #2e5c7a;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 9.5px;
+    line-height: 1.7;
+    padding: 7px 9px;
+    resize: none;
+    outline: none;
+    border-radius: 3px;
+    transition: border-color .25s, box-shadow .25s, color .2s;
+    user-select: text;
+}
+#lsp-ta:focus {
+    border-color: rgba(0,207,255,.45);
+    box-shadow: 0 0 16px rgba(0,207,255,.07);
+    color: #4a82a2;
+}
+#lsp-ta::placeholder { color: #0c1e2e; }
+/* bottom-right dot of textarea */
+#lsp-ta-corner {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: rgba(0,207,255,.2);
+    pointer-events: none;
+}
+
+/* ── Control buttons ── */
+#lsp-btns {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 5px;
+    flex-shrink: 0;
+}
+#lsp-btns button {
+    background: #020810;
+    border: 1px solid #0a1e32;
+    color: #1e4060;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 8.5px;
+    letter-spacing: 1.8px;
+    padding: 6px 0;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all .2s;
+    position: relative;
+    overflow: hidden;
+}
+#lsp-btns button::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent);
+    pointer-events: none;
+}
+#lsp-btns button:active { transform: translateY(1px); }
+
+#lsp-load:hover  { border-color: rgba(0,255,127,.4); color: #00ff7f; background: #011009; }
+#lsp-play:hover,
+#lsp-play.lsp-live {
+    border-color: rgba(0,207,255,.55) !important;
+    color: #00cfff !important;
+    background: #011520 !important;
+    box-shadow: 0 0 10px rgba(0,207,255,.1);
+}
+#lsp-stop:hover  { border-color: rgba(255,44,80,.4); color: #ff2c50; background: #100208; }
+
+/* ── Meta bar ── */
+#lsp-meta {
+    display: flex;
+    justify-content: space-between;
+    font-size: 8px;
+    letter-spacing: 1px;
+    flex-shrink: 0;
+    padding: 0 1px;
+}
+#lsp-count { color: #162840; }
+#lsp-prog  { color: rgba(0,207,255,.4); font-variant-numeric: tabular-nums; }
+
+/* ── Now-playing box ── */
+#lsp-now {
+    background: #020810;
+    border: 1px solid #0a1e32;
+    border-left: 2px solid #00cfff;
+    border-radius: 3px;
+    padding: 9px 11px 9px 13px;
+    flex-shrink: 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: relative;
+}
+#lsp-nowlabel {
+    font-size: 7px;
+    letter-spacing: 2px;
+    color: rgba(0,207,255,.35);
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    transform: rotate(180deg);
+    flex-shrink: 0;
+}
+#lsp-cur {
+    color: #00cfff;
+    font-size: 11.5px;
+    line-height: 1.5;
+    text-shadow: 0 0 16px rgba(0,207,255,.5);
+    word-break: break-word;
+    flex: 1;
+}
+
+/* ── Queue divider ── */
+#lsp-divider {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-shrink: 0;
+    font-size: 7.5px;
+    letter-spacing: 2px;
+    color: #0d2035;
+}
+#lsp-divline {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, #0d2035, transparent);
+}
+
+/* ── Lyrics queue scroll ── */
+#lsp-q {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 3px;
+}
+#lsp-q::-webkit-scrollbar { width: 2px; }
+#lsp-q::-webkit-scrollbar-track { background: transparent; }
+#lsp-q::-webkit-scrollbar-thumb { background: #0d2640; border-radius: 1px; }
+
+.lq-row {
+    padding: 2px 7px;
+    font-size: 9px;
+    line-height: 2;
+    color: #0c1e30;
+    border-left: 2px solid transparent;
+    border-radius: 2px;
+    letter-spacing: .4px;
+    transition: color .18s, background .18s, border-color .18s;
+}
+.lq-row.lq-past {
+    color: #071422;
+}
+.lq-row.lq-active {
+    color: #00ff7f;
+    background: #010e06;
+    border-left-color: #00ff7f;
+    text-shadow: 0 0 9px rgba(0,255,127,.35);
+}
+
+/* ── Resize handle ── */
+#lsp-rzh {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 20px;
+    height: 20px;
+    cursor: se-resize;
+    color: #0d2035;
+    font-size: 15px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2;
+    transition: color .2s;
+    line-height: 1;
+}
+#lsp-rzh:hover { color: #00cfff; }
+`;
+    document.head.appendChild(styleEl);
+    document.body.appendChild(panel);
+
+    // ── Element refs ──────────────────────────────────────────────────
+    const elStatusDot   = document.getElementById('lsp-dot');
+    const elX           = document.getElementById('lsp-x');
+    const elHdr         = document.getElementById('lsp-hdr');
+    const elTextarea    = document.getElementById('lsp-ta');
+    const elLoadBtn     = document.getElementById('lsp-load');
+    const elPlayBtn     = document.getElementById('lsp-play');
+    const elStopBtn     = document.getElementById('lsp-stop');
+    const elCount       = document.getElementById('lsp-count');
+    const elProgress    = document.getElementById('lsp-prog');
+    const elCurrentLine = document.getElementById('lsp-cur');
+    const elQueue       = document.getElementById('lsp-q');
+    const elRzh         = document.getElementById('lsp-rzh');
+
+    // ── Button events ─────────────────────────────────────────────────
+    elX.addEventListener('click', () => { panel.style.display = 'none'; });
+
+    elLoadBtn.addEventListener('click', () => {
+        stopPlayback();
+        lyrics = parseLRC(elTextarea.value);
+        elCount.textContent = lyrics.length
+            ? lyrics.length + ' lines loaded'
+            : 'no lines parsed – check format';
+        elQueue.innerHTML = lyrics
+            .map(l => `<div class="lq-row">${l.text || '&mdash;'}</div>`)
+            .join('');
+        elCurrentLine.textContent = lyrics.length
+            ? '— ready to play —'
+            : 'No LRC lines found. Check [MM:SS.mmm] format.';
+    });
+
+    elPlayBtn.addEventListener('click', () => {
+        if (isPlaying) { stopPlayback(); return; }
+        if (lyrics.length) startPlayback();
+    });
+
+    elStopBtn.addEventListener('click', stopPlayback);
+
+    // ── Drag ─────────────────────────────────────────────────────────
+    let dragging = false, dox = 0, doy = 0;
+
+    elHdr.addEventListener('mousedown', e => {
+        if (e.target === elX) return;
+        dragging = true;
+        // Convert right-based position to left-based on first drag
+        if (panel.style.right && !panel.style.left) {
+            panel.style.left = panel.offsetLeft + 'px';
+            panel.style.right = 'auto';
+        }
+        dox = e.clientX - panel.offsetLeft;
+        doy = e.clientY - panel.offsetTop;
+        e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!dragging) return;
+        const nx = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth,  e.clientX - dox));
+        const ny = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - doy));
+        panel.style.left  = nx + 'px';
+        panel.style.top   = ny + 'px';
+        panel.style.right = 'auto';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    // ── Resize ────────────────────────────────────────────────────────
+    let resizing = false, rw0 = 0, rh0 = 0, rx0 = 0, ry0 = 0;
+
+    elRzh.addEventListener('mousedown', e => {
+        resizing = true;
+        rw0 = panel.offsetWidth;
+        rh0 = panel.offsetHeight;
+        rx0 = e.clientX;
+        ry0 = e.clientY;
+        e.preventDefault();
+        e.stopPropagation();
+    });
+    document.addEventListener('mousemove', e => {
+        if (!resizing) return;
+        const pl = panel.offsetLeft, pt = panel.offsetTop;
+        const nw = Math.max(240, Math.min(window.innerWidth  - pl, rw0 + e.clientX - rx0));
+        const nh = Math.max(280, Math.min(window.innerHeight - pt, rh0 + e.clientY - ry0));
+        panel.style.width  = nw + 'px';
+        panel.style.height = nh + 'px';
+    });
+    document.addEventListener('mouseup', () => { resizing = false; });
+
+    // ── L key toggle ─────────────────────────────────────────────────
+    // Check that neither the game chatBox (ze) nor the lyrics textarea is focused.
+    window.addEventListener('keydown', e => {
+        if (e.key !== 'l' && e.key !== 'L') return;
+        const focused = document.activeElement;
+        if (focused === elTextarea) return;
+        if (typeof ze !== 'undefined' && focused === ze) return;
+        panel.style.display = (panel.style.display === 'none') ? 'flex' : 'none';
+    }, true);
+
+    // Keep textarea keystrokes from leaking into the game's key handlers.
+    elTextarea.addEventListener('keydown', e => e.stopPropagation());
+    elTextarea.addEventListener('keyup',   e => e.stopPropagation());
+
+})();
