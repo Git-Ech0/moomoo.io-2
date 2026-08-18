@@ -4468,154 +4468,71 @@ window.config = y;
 
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ LYRIC SYNC PANEL v2  —  Web Worker timing engine
+   ◈ LYRIC SYNC PANEL v3  —  Per-line setTimeout timing engine
    toggle [ L ]  |  drag header  |  resize ⌟
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
 
     // ── State ─────────────────────────────────────────────────────────
-    let lyrics      = [];
-    let isPlaying   = false;
-    let lyrWorker   = null;
-    let rafId       = null;
-    let playStart   = 0;         // performance.now() snapshot at PLAY press
-
-    // ── Chat send queue — decoupled from timing, respects 500ms cooldown ──
-    const CHAT_GAP  = 560;       // ms gap between sends; server enforces 500ms
-    const sendQ     = [];
-    let sendClock   = null;
-
-    function enqueueSend(text) {
-        const SKIP = /^\(\s*(intro|outro)\s*\)$/i;
-        if (!text || SKIP.test(text)) return;
-        sendQ.push(text);
-        if (!sendClock) drainSendQ();
-    }
-
-    function drainSendQ() {
-        if (!sendQ.length) { sendClock = null; return; }
-        on(sendQ.shift());                    // game's own chat send — always in scope
-        sendClock = setTimeout(drainSendQ, CHAT_GAP);
-    }
-
-    function flushSendQ() {
-        sendQ.length = 0;
-        if (sendClock) { clearTimeout(sendClock); sendClock = null; }
-    }
-
-    // ── Web Worker — runs on its own thread, unaffected by game activity ──
-    // Ticks every 30ms, fires lines when their timestamp is reached.
-    const WORKER_SRC = `
-        var lyr=[], t0=0, ptr=0, iv=null;
-        self.onmessage = function(e) {
-            var d = e.data;
-            if (d.type === 'START') {
-                lyr = d.lyr; t0 = Date.now(); ptr = 0;
-                clearInterval(iv);
-                iv = setInterval(tick, 30);
-            } else if (d.type === 'STOP') {
-                clearInterval(iv); iv = null;
-            }
-        };
-        function tick() {
-            var now = (Date.now() - t0) / 1000;
-            while (ptr < lyr.length && lyr[ptr].time <= now) {
-                self.postMessage({ type: 'LINE', idx: ptr, text: lyr[ptr].text });
-                ptr++;
-            }
-            if (ptr >= lyr.length) {
-                clearInterval(iv); iv = null;
-                self.postMessage({ type: 'DONE' });
-            }
-        }
-    `;
-
-    function spawnWorker() {
-        try {
-            const blob = new Blob([WORKER_SRC], { type: 'application/javascript' });
-            const url  = URL.createObjectURL(blob);
-            const w    = new Worker(url);
-            URL.revokeObjectURL(url);
-            return w;
-        } catch(err) {
-            console.warn('[LyricSync] Worker blocked, falling back to main thread:', err);
-            return null;
-        }
-    }
-
-    // ── Fallback: setInterval on main thread (if Worker is CSP-blocked) ─
-    let fbInterval = null, fbPtr = 0, fbT0 = 0;
-
-    function startFallback() {
-        fbPtr = 0; fbT0 = Date.now();
-        fbInterval = setInterval(function() {
-            if (!isPlaying) { clearInterval(fbInterval); return; }
-            var now = (Date.now() - fbT0) / 1000;
-            while (fbPtr < lyrics.length && lyrics[fbPtr].time <= now) {
-                enqueueSend(lyrics[fbPtr].text);
-                activateLine(fbPtr);
-                fbPtr++;
-            }
-            if (fbPtr >= lyrics.length) {
-                clearInterval(fbInterval);
-                setTimeout(stopPlayback, 3000);
-            }
-        }, 30);
-    }
-
-    function stopFallback() {
-        clearInterval(fbInterval);
-        fbInterval = null;
-    }
+    let lyrics       = [];
+    let isPlaying    = false;
+    let rafId        = null;
+    let playStart    = 0;            // performance.now() at PLAY press
+    let lineTimers   = [];           // one setTimeout handle per lyric line
+    let doneTimer    = null;         // fires stopPlayback after last line
 
     // ── LRC parser ────────────────────────────────────────────────────
+    // Parses [MM:SS.mmm] or [MM:SS.mm] tags and extracts the raw text
+    // after the bracket exactly — no transformation, no extra formatting.
     function parseLRC(raw) {
-        const RE = /\[(\d{1,2}):(\d{2})\.(\d{2,3})\]\s*(.*)/;
+        const RE = /^\[(\d{1,2}):(\d{2})\.(\d{2,3})\](.*)$/;
         const out = [];
         raw.split('\n').forEach(function(line) {
             var m = line.trim().match(RE);
             if (!m) return;
-            var ms = m[3].length === 2 ? +m[3] * 10 : +m[3];
-            out.push({ time: +m[1]*60 + +m[2] + ms/1000, text: m[4].trim() });
+            var centis = m[3].length === 2 ? +m[3] * 10 : +m[3];
+            var timeSec = +m[1] * 60 + +m[2] + centis / 1000;
+            // Copy the text verbatim — just strip leading/trailing whitespace
+            var text = m[4].trim();
+            out.push({ time: timeSec, text: text });
         });
-        return out.sort(function(a,b){ return a.time - b.time; });
+        // Sort ascending by timestamp — handles any out-of-order paste
+        return out.sort(function(a, b) { return a.time - b.time; });
     }
 
     // ── Playback ──────────────────────────────────────────────────────
+    // Each lyric line gets its own independent setTimeout scheduled at
+    // its exact LRC timestamp from play-start.  No queue, no drain, no
+    // drift — every line fires exactly when its bracket says it should.
+    const SKIP = /^\(\s*(intro|outro)\s*\)$/i;
+
     function startPlayback() {
         if (!lyrics.length) return;
-        stopPlayback();
-        isPlaying  = true;
-        playStart  = performance.now();
-        flushSendQ();
+        stopPlayback();                      // cancel any previous session cleanly
+        isPlaying = true;
+        playStart = performance.now();
         applyPlayState();
 
-        // Try Web Worker first
-        lyrWorker = spawnWorker();
-        if (lyrWorker) {
-            lyrWorker.onmessage = function(e) {
-                var msg = e.data;
-                if (msg.type === 'LINE') {
-                    enqueueSend(msg.text);
-                    activateLine(msg.idx);
-                } else if (msg.type === 'DONE') {
-                    setTimeout(stopPlayback, 3000);
+        lyrics.forEach(function(line, idx) {
+            var delayMs = Math.max(0, line.time * 1000);
+            var tid = setTimeout(function() {
+                if (!isPlaying) return;
+                // Send the raw text to game chat — skip meta-labels only
+                if (line.text && !SKIP.test(line.text)) {
+                    on(line.text);           // game's own chat send, always in scope
                 }
-            };
-            lyrWorker.onerror = function(err) {
-                console.warn('[LyricSync] Worker error, switching to fallback:', err);
-                lyrWorker = null;
-                startFallback();
-            };
-            lyrWorker.postMessage({
-                type: 'START',
-                lyr:  lyrics.map(function(l){ return { time: l.time, text: l.text }; })
-            });
-        } else {
-            startFallback();
-        }
+                activateLine(idx);
+            }, delayMs);
+            lineTimers.push(tid);
+        });
 
-        // Visual progress ticker — purely for the panel display, separate from sends
+        // Auto-stop a few seconds after the last line fires
+        var lastMs = lyrics[lyrics.length - 1].time * 1000;
+        doneTimer = setTimeout(function() {
+            stopPlayback();
+        }, lastMs + 3000);
+
+        // Visual progress ticker — drives the clock display only
         (function tick() {
             if (!isPlaying) return;
             var elapsed = (performance.now() - playStart) / 1000;
@@ -4626,10 +4543,14 @@ window.config = y;
 
     function stopPlayback() {
         isPlaying = false;
-        if (lyrWorker) { lyrWorker.terminate(); lyrWorker = null; }
-        stopFallback();
-        if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-        flushSendQ();
+
+        // Cancel every pending line timer
+        lineTimers.forEach(function(tid) { clearTimeout(tid); });
+        lineTimers = [];
+
+        if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
+        if (rafId)     { cancelAnimationFrame(rafId); rafId = null; }
+
         applyPlayState();
         renderProgress(0);
         elCurrentLine.textContent = lyrics.length ? '— ready to play —' : 'Paste LRC lyrics above, then LOAD';
