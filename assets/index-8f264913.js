@@ -4468,35 +4468,121 @@ window.config = y;
 
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ LYRIC SYNC PANEL v3  —  Per-line setTimeout timing engine
-   toggle [ L ]  |  drag header  |  resize ⌟
+   ◈ LYRIC SYNC PANEL v4  —  Rate-limit-aware send queue
+   ─────────────────────────────────────────────────────────────────────
+   ROOT CAUSE FIX:
+     The moomoo.io server enforces a ~3300 ms chat cooldown that is
+     HIGHER than the 500 ms value stored in the client config. The old
+     v3 code fired on() straight from every setTimeout callback with no
+     cooldown awareness, so any lyric landing within 3300 ms of the
+     previous one was silently dropped by the server. "For a woman's
+     heart" sits at exactly 3250 ms after the prior line — 50 ms under
+     the threshold — causing it to be dropped every single time.
+
+   FIX STRATEGY:
+     Visual updates (panel display) still fire at the EXACT LRC timestamp
+     so the UI stays perfectly in sync. The actual WebSocket send is
+     routed through a rate-limited queue. If a send would violate the
+     server cooldown, it waits until the window clears (typically only
+     tens of milliseconds). If a queued message has been sitting longer
+     than MAX_STALE_MS it is discarded rather than sent way out of sync.
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
 
-    // ── State ─────────────────────────────────────────────────────────
-    let lyrics       = [];
-    let isPlaying    = false;
-    let rafId        = null;
-    let playStart    = 0;            // performance.now() at PLAY press
-    let lineTimers   = [];           // one setTimeout handle per lyric line
-    let doneTimer    = null;         // fires stopPlayback after last line
+    // ─────────────────────────── TUNING ───────────────────────────────
+    // Set just above the server's observed ~3300 ms hard rate-limit.
+    // Raise this if you still see drops; lower it if gaps feel too long.
+    var SEND_GAP_MS  = 3350;
+    // A queued message older than this (ms) is discarded — it would
+    // arrive so far behind its lyric timestamp it is no longer useful.
+    var MAX_STALE_MS = 1500;
+    // ──────────────────────────────────────────────────────────────────
+
+    // ── Core state ────────────────────────────────────────────────────
+    var lyrics     = [];
+    var isPlaying  = false;
+    var rafId      = null;
+    var playStart  = 0;
+    var lineTimers = [];
+    var doneTimer  = null;
+
+    // ── Send-queue state ──────────────────────────────────────────────
+    // Each entry: { text: string, queuedAt: performance.now() }
+    var sendQ      = [];
+    // Initialised negative so the very first send fires immediately.
+    var lastSentAt = -(SEND_GAP_MS + 1);
+    var sqTimer    = null;
+
+    // ── Send-queue machinery ──────────────────────────────────────────
+
+    /**
+     * Called whenever the queue timer fires.
+     * Evicts stale entries, then sends the next eligible item and
+     * reschedules itself if more items remain.
+     */
+    function flushQ() {
+        sqTimer = null;
+        if (!isPlaying) { sendQ = []; return; }
+
+        var now = performance.now();
+
+        // Drop anything that has aged past MAX_STALE_MS.
+        while (sendQ.length && now - sendQ[0].queuedAt > MAX_STALE_MS) {
+            sendQ.shift();
+        }
+        if (!sendQ.length) return;
+
+        var sinceLastSend = now - lastSentAt;
+
+        if (sinceLastSend >= SEND_GAP_MS) {
+            // Safe to send — take the front item.
+            var item = sendQ.shift();
+            on(item.text);
+            lastSentAt = performance.now();
+        }
+
+        // If items remain, schedule the next flush at the earliest safe moment.
+        if (sendQ.length) {
+            var waitMs = Math.max(0, SEND_GAP_MS - (performance.now() - lastSentAt));
+            sqTimer = setTimeout(flushQ, waitMs);
+        }
+    }
+
+    /**
+     * Enqueue a chat message for rate-limited delivery.
+     * The message will be sent at the next moment the server cooldown
+     * permits — usually within milliseconds for lines that are close
+     * together, transparently invisible to the viewer.
+     */
+    function queueSend(text) {
+        if (!text) return;
+        var now = performance.now();
+        sendQ.push({ text: text, queuedAt: now });
+
+        // Only arm a new timer if one is not already pending.
+        if (sqTimer !== null) return;
+        var waitMs = Math.max(0, SEND_GAP_MS - (now - lastSentAt));
+        sqTimer = setTimeout(flushQ, waitMs);
+    }
+
+    /** Cancel all pending sends — called on stopPlayback. */
+    function clearSendQ() {
+        sendQ = [];
+        if (sqTimer !== null) { clearTimeout(sqTimer); sqTimer = null; }
+    }
 
     // ── LRC parser ────────────────────────────────────────────────────
-    // Parses [MM:SS.mmm] or [MM:SS.mm] tags and extracts the raw text
-    // after the bracket exactly — no transformation, no extra formatting.
     function parseLRC(raw) {
-        const RE = /^\[(\d{1,2}):(\d{2})\.(\d{2,3})\](.*)$/;
-        const out = [];
+        var RE = /^\[(\d{1,2}):(\d{2})\.(\d{2,3})\](.*)$/;
+        var out = [];
         raw.split('\n').forEach(function(line) {
             var m = line.trim().match(RE);
             if (!m) return;
-            var centis = m[3].length === 2 ? +m[3] * 10 : +m[3];
+            var centis  = m[3].length === 2 ? +m[3] * 10 : +m[3];
             var timeSec = +m[1] * 60 + +m[2] + centis / 1000;
-            // Copy the text verbatim — just strip leading/trailing whitespace
-            var text = m[4].trim();
+            var text    = m[4].trim();
             out.push({ time: timeSec, text: text });
         });
-        // Sort ascending by timestamp — handles any out-of-order paste
         return out.sort(function(a, b) { return a.time - b.time; });
     }
 
@@ -4504,48 +4590,52 @@ window.config = y;
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
-        isPlaying = true;
-        playStart = performance.now();
+
+        isPlaying  = true;
+        playStart  = performance.now();
+        // Prime lastSentAt so the very first lyric fires immediately.
+        lastSentAt = performance.now() - SEND_GAP_MS - 1;
         applyPlayState();
 
         lyrics.forEach(function(line, idx) {
             var delayMs = Math.max(0, line.time * 1000);
             var tid = setTimeout(function() {
                 if (!isPlaying) return;
-                on(line.text);
+                // ── VISUAL UPDATE ── always at the exact LRC timestamp.
                 activateLine(idx);
+                // ── CHAT SEND ── routed through the rate-limit queue.
+                // Lines that arrive too close together will wait for the
+                // server cooldown window before being dispatched.
+                queueSend(line.text);
             }, delayMs);
             lineTimers.push(tid);
         });
 
-        // Auto-stop a few seconds after the last line fires
         var lastMs = lyrics[lyrics.length - 1].time * 1000;
-        doneTimer = setTimeout(function() {
-            stopPlayback();
-        }, lastMs + 3000);
+        doneTimer  = setTimeout(function() { stopPlayback(); }, lastMs + 3000);
 
-        // Visual progress ticker — drives the clock display only
+        // rAF loop — drives the elapsed-time display only.
         (function tick() {
             if (!isPlaying) return;
-            var elapsed = (performance.now() - playStart) / 1000;
-            renderProgress(elapsed);
+            renderProgress((performance.now() - playStart) / 1000);
             rafId = requestAnimationFrame(tick);
         })();
     }
 
     function stopPlayback() {
         isPlaying = false;
+        clearSendQ();
 
-        // Cancel every pending line timer
         lineTimers.forEach(function(tid) { clearTimeout(tid); });
         lineTimers = [];
-
         if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
         if (rafId)     { cancelAnimationFrame(rafId); rafId = null; }
 
         applyPlayState();
         renderProgress(0);
-        elCurrentLine.textContent = lyrics.length ? '— ready to play —' : 'Paste LRC lyrics above, then LOAD';
+        elCurrentLine.textContent = lyrics.length
+            ? '— ready to play —'
+            : 'Paste LRC lyrics above, then LOAD';
         elQueue.querySelectorAll('.lq-row').forEach(function(el) {
             el.classList.remove('lq-active', 'lq-past');
         });
@@ -4568,7 +4658,7 @@ window.config = y;
         var rows = elQueue.querySelectorAll('.lq-row');
         rows.forEach(function(row, i) {
             row.classList.remove('lq-active', 'lq-past');
-            if      (i < idx)  row.classList.add('lq-past');
+            if      (i < idx)   row.classList.add('lq-past');
             else if (i === idx) {
                 row.classList.add('lq-active');
                 row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -4578,7 +4668,7 @@ window.config = y;
 
     function renderProgress(s) {
         var m  = Math.floor(s / 60);
-        var ss = Math.floor(s % 60).toString().padStart(2,'0');
+        var ss = Math.floor(s % 60).toString().padStart(2, '0');
         elProgress.textContent = m + ':' + ss;
     }
 
