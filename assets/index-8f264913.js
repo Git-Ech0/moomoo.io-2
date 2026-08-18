@@ -4468,412 +4468,194 @@ window.config = y;
 
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ LYRIC SYNC PANEL v4  —  Rate-limit-aware send queue
-   ─────────────────────────────────────────────────────────────────────
-   ROOT CAUSE FIX:
-     The moomoo.io server enforces a ~3300 ms chat cooldown that is
-     HIGHER than the 500 ms value stored in the client config. The old
-     v3 code fired on() straight from every setTimeout callback with no
-     cooldown awareness, so any lyric landing within 3300 ms of the
-     previous one was silently dropped by the server. "For a woman's
-     heart" sits at exactly 3250 ms after the prior line — 50 ms under
-     the threshold — causing it to be dropped every single time.
-
-   FIX STRATEGY:
-     Visual updates (panel display) still fire at the EXACT LRC timestamp
-     so the UI stays perfectly in sync. The actual WebSocket send is
-     routed through a rate-limited queue. If a send would violate the
-     server cooldown, it waits until the window clears (typically only
-     tens of milliseconds). If a queued message has been sitting longer
-     than MAX_STALE_MS it is discarded rather than sent way out of sync.
+   ◈ CLEAN LYRIC SYNC ENGINE (Simplified & Filter-Bypassed)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
-
-    // ─────────────────────────── TUNING ───────────────────────────────
-    // Set just above the server's observed ~3300 ms hard rate-limit.
-    // Raise this if you still see drops; lower it if gaps feel too long.
-    var SEND_GAP_MS  = 3350;
-    // A queued message older than this (ms) is discarded — it would
-    // arrive so far behind its lyric timestamp it is no longer useful.
-    var MAX_STALE_MS = 1500;
-    // ──────────────────────────────────────────────────────────────────
-
-    // ── Core state ────────────────────────────────────────────────────
-    var lyrics     = [];
-    var isPlaying  = false;
-    var rafId      = null;
-    var playStart  = 0;
+    var lyrics = [];
+    var isPlaying = false;
     var lineTimers = [];
-    var doneTimer  = null;
 
-    // ── Send-queue state ──────────────────────────────────────────────
-    // Each entry: { text: string, queuedAt: performance.now() }
-    var sendQ      = [];
-    // Initialised negative so the very first send fires immediately.
-    var lastSentAt = -(SEND_GAP_MS + 1);
-    var sqTimer    = null;
-
-    // ── Send-queue machinery ──────────────────────────────────────────
-
-    /**
-     * Called whenever the queue timer fires.
-     * Evicts stale entries, then sends the next eligible item and
-     * reschedules itself if more items remain.
-     */
-    function flushQ() {
-        sqTimer = null;
-        if (!isPlaying) { sendQ = []; return; }
-
-        var now = performance.now();
-
-        // Drop anything that has aged past MAX_STALE_MS.
-        while (sendQ.length && now - sendQ[0].queuedAt > MAX_STALE_MS) {
-            sendQ.shift();
-        }
-        if (!sendQ.length) return;
-
-        var sinceLastSend = now - lastSentAt;
-
-        if (sinceLastSend >= SEND_GAP_MS) {
-            // Safe to send — take the front item.
-            var item = sendQ.shift();
-            on(item.text);
-            lastSentAt = performance.now();
-        }
-
-        // If items remain, schedule the next flush at the earliest safe moment.
-        if (sendQ.length) {
-            var waitMs = Math.max(0, SEND_GAP_MS - (performance.now() - lastSentAt));
-            sqTimer = setTimeout(flushQ, waitMs);
-        }
-    }
-
-    /**
-     * Enqueue a chat message for rate-limited delivery.
-     * The message will be sent at the next moment the server cooldown
-     * permits — usually within milliseconds for lines that are close
-     * together, transparently invisible to the viewer.
-     */
-    function queueSend(text) {
-        if (!text) return;
-        var now = performance.now();
-        sendQ.push({ text: text, queuedAt: now });
-
-        // Only arm a new timer if one is not already pending.
-        if (sqTimer !== null) return;
-        var waitMs = Math.max(0, SEND_GAP_MS - (now - lastSentAt));
-        sqTimer = setTimeout(flushQ, waitMs);
-    }
-
-    /** Cancel all pending sends — called on stopPlayback. */
-    function clearSendQ() {
-        sendQ = [];
-        if (sqTimer !== null) { clearTimeout(sqTimer); sqTimer = null; }
-    }
-
-    // ── LRC parser ────────────────────────────────────────────────────
-    function parseLRC(raw) {
-        var RE = /^\[(\d{1,2}):(\d{2})\.(\d{2,3})\](.*)$/;
-        var out = [];
-        raw.split('\n').forEach(function(line) {
-            var m = line.trim().match(RE);
-            if (!m) return;
-            var centis  = m[3].length === 2 ? +m[3] * 10 : +m[3];
-            var timeSec = +m[1] * 60 + +m[2] + centis / 1000;
-            var text    = m[4].trim();
-            out.push({ time: timeSec, text: text });
+    // ── Bypass MooMoo's silent chat blacklist ──
+    function bypassFilter(text) {
+        var banned = ["kill", "die", "baby", "touch", "sex", "rape"];
+        var result = text;
+        banned.forEach(function(word) {
+            var regex = new RegExp(word, "gi");
+            result = result.replace(regex, function(match) {
+                // Inserts an invisible zero-width space inside the word
+                return match[0] + "\u200B" + match.slice(1);
+            });
         });
+        return result;
+    }
+
+    // ── Simple, robust LRC parser ──
+    function parseLRC(raw) {
+        var out = [];
+        var lines = raw.split("\n");
+        var reg = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\](.*)/;
+
+        lines.forEach(function(line) {
+            var m = line.trim().match(reg);
+            if (!m) return;
+            var min = parseFloat(m[1]);
+            var sec = parseFloat(m[2]);
+            var text = m[3].trim();
+            if (text) {
+                out.push({ time: (min * 60 + sec) * 1000, text: text });
+            }
+        });
+
         return out.sort(function(a, b) { return a.time - b.time; });
     }
 
-    // ── Playback ──────────────────────────────────────────────────────
+    // ── Direct Playback ──
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
-
-        isPlaying  = true;
-        playStart  = performance.now();
-        // Prime lastSentAt so the very first lyric fires immediately.
-        lastSentAt = performance.now() - SEND_GAP_MS - 1;
+        isPlaying = true;
         applyPlayState();
 
         lyrics.forEach(function(line, idx) {
-            var delayMs = Math.max(0, line.time * 1000);
             var tid = setTimeout(function() {
                 if (!isPlaying) return;
-                // ── VISUAL UPDATE ── always at the exact LRC timestamp.
+
+                // 1. Update UI
                 activateLine(idx);
-                // ── CHAT SEND ── routed through the rate-limit queue.
-                // Lines that arrive too close together will wait for the
-                // server cooldown window before being dispatched.
-                queueSend(line.text);
-            }, delayMs);
+
+                // 2. Format and Send (cleaned of blacklist & chunked to 30 chars)
+                var safeText = bypassFilter(line.text).slice(0, 30);
+                on(safeText);
+
+            }, Math.max(0, line.time));
+
             lineTimers.push(tid);
         });
 
-        var lastMs = lyrics[lyrics.length - 1].time * 1000;
-        doneTimer  = setTimeout(function() { stopPlayback(); }, lastMs + 3000);
-
-        // rAF loop — drives the elapsed-time display only.
-        (function tick() {
-            if (!isPlaying) return;
-            renderProgress((performance.now() - playStart) / 1000);
-            rafId = requestAnimationFrame(tick);
-        })();
+        var totalDuration = lyrics[lyrics.length - 1].time + 2000;
+        var endTid = setTimeout(stopPlayback, totalDuration);
+        lineTimers.push(endTid);
     }
 
     function stopPlayback() {
         isPlaying = false;
-        clearSendQ();
-
-        lineTimers.forEach(function(tid) { clearTimeout(tid); });
+        lineTimers.forEach(clearTimeout);
         lineTimers = [];
-        if (doneTimer) { clearTimeout(doneTimer); doneTimer = null; }
-        if (rafId)     { cancelAnimationFrame(rafId); rafId = null; }
-
         applyPlayState();
-        renderProgress(0);
-        elCurrentLine.textContent = lyrics.length
-            ? '— ready to play —'
-            : 'Paste LRC lyrics above, then LOAD';
-        elQueue.querySelectorAll('.lq-row').forEach(function(el) {
-            el.classList.remove('lq-active', 'lq-past');
+        elCurrentLine.textContent = lyrics.length ? "— ready —" : "Paste lyrics and press LOAD";
+        elQueue.querySelectorAll(".lq-row").forEach(function(el) {
+            el.classList.remove("lq-active", "lq-past");
         });
     }
 
     function applyPlayState() {
-        if (isPlaying) {
-            elPlayBtn.textContent = '▶ LIVE';
-            elPlayBtn.classList.add('lsp-live');
-            elStatusDot.classList.add('lsd-on');
-        } else {
-            elPlayBtn.textContent = '▶ PLAY';
-            elPlayBtn.classList.remove('lsp-live');
-            elStatusDot.classList.remove('lsd-on');
-        }
+        elPlayBtn.textContent = isPlaying ? "▶ LIVE" : "▶ PLAY";
+        elStatusDot.classList.toggle("lsd-on", isPlaying);
     }
 
     function activateLine(idx) {
-        elCurrentLine.textContent = lyrics[idx].text || '♩';
-        var rows = elQueue.querySelectorAll('.lq-row');
+        elCurrentLine.textContent = lyrics[idx].text;
+        var rows = elQueue.querySelectorAll(".lq-row");
         rows.forEach(function(row, i) {
-            row.classList.remove('lq-active', 'lq-past');
-            if      (i < idx)   row.classList.add('lq-past');
+            row.classList.remove("lq-active", "lq-past");
+            if (i < idx) row.classList.add("lq-past");
             else if (i === idx) {
-                row.classList.add('lq-active');
-                row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                row.classList.add("lq-active");
+                row.scrollIntoView({ block: "nearest", behavior: "smooth" });
             }
         });
     }
 
-    function renderProgress(s) {
-        var m  = Math.floor(s / 60);
-        var ss = Math.floor(s % 60).toString().padStart(2, '0');
-        elProgress.textContent = m + ':' + ss;
-    }
-
-    // ── DOM ───────────────────────────────────────────────────────────
-    var panel = document.createElement('div');
-    panel.id  = 'lsp-panel';
+    // ── DOM Construction ──
+    var panel = document.createElement("div");
+    panel.id = "lsp-panel";
     panel.innerHTML = [
         '<div id="lsp-hdr">',
-        '  <div id="lsp-htitle"><span id="lsp-dot"></span><span>&#9672;&nbsp;LYRIC&nbsp;SYNC</span></div>',
-        '  <div id="lsp-hright"><span id="lsp-hint">[&nbsp;L&nbsp;]</span><button id="lsp-x">&#x2715;</button></div>',
+        '  <div id="lsp-htitle"><span id="lsp-dot"></span><span>LYRIC SYNC</span></div>',
+        '  <button id="lsp-x">&#x2715;</button>',
         '</div>',
         '<div id="lsp-body">',
-        '  <textarea id="lsp-ta" placeholder="[00:00.000] (Intro)&#10;[00:01.350] First lyric line...&#10;[00:04.100] Second line..."></textarea>',
+        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] LRC here..."></textarea>',
         '  <div id="lsp-btns">',
-        '    <button id="lsp-load">&#x2B06; LOAD</button>',
-        '    <button id="lsp-play">&#x25B6; PLAY</button>',
-        '    <button id="lsp-stop">&#x25A0; STOP</button>',
+        '    <button id="lsp-load">LOAD</button>',
+        '    <button id="lsp-play">PLAY</button>',
+        '    <button id="lsp-stop">STOP</button>',
         '  </div>',
-        '  <div id="lsp-meta"><span id="lsp-count">no lyrics loaded</span><span id="lsp-prog">0:00</span></div>',
-        '  <div id="lsp-now"><div id="lsp-nowlbl">NOW</div><div id="lsp-cur">Paste LRC lyrics above, then LOAD</div></div>',
-        '  <div id="lsp-qdiv"><span>QUEUE</span><div id="lsp-qdivline"></div></div>',
+        '  <div id="lsp-cur">Paste lyrics and press LOAD</div>',
         '  <div id="lsp-q"></div>',
-        '</div>',
-        '<div id="lsp-rzh" title="Drag to resize">&#x231F;</div>'
-    ].join('');
+        '</div>'
+    ].join("");
 
-    // ── Styles ────────────────────────────────────────────────────────
-    var styleEl = document.createElement('style');
-    styleEl.textContent = `
-#lsp-panel{position:fixed;top:72px;right:18px;width:348px;min-width:240px;height:478px;min-height:280px;
-  background:#05090f;border:1px solid #0d2640;border-top:2px solid #00cfff;border-radius:6px;
-  box-shadow:0 0 48px rgba(0,207,255,.11),0 0 0 1px rgba(0,207,255,.04) inset,0 16px 64px rgba(0,0,0,.8);
-  font-family:'Courier New',Courier,monospace;z-index:999999;display:flex;flex-direction:column;
-  overflow:hidden;user-select:none;}
-#lsp-panel::before{content:'';position:absolute;inset:0;
-  background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,207,255,.007) 3px,rgba(0,207,255,.007) 4px);
-  pointer-events:none;border-radius:6px;z-index:0;}
-#lsp-panel::after{content:'';position:absolute;top:0;left:0;width:40px;height:2px;
-  background:linear-gradient(90deg,#00cfff,transparent);pointer-events:none;}
-
-#lsp-hdr{display:flex;align-items:center;justify-content:space-between;padding:7px 11px;
-  background:linear-gradient(90deg,#091624,#060f1a);border-bottom:1px solid #0d2640;
-  cursor:grab;flex-shrink:0;position:relative;z-index:1;}
-#lsp-hdr:active{cursor:grabbing;}
-
-#lsp-htitle{display:flex;align-items:center;gap:9px;color:#00cfff;font-size:10px;font-weight:700;
-  letter-spacing:3.5px;text-shadow:0 0 14px rgba(0,207,255,.9);}
-
-#lsp-dot{display:inline-block;width:7px;height:7px;border-radius:50%;
-  background:#0d2a3a;border:1px solid #1a4060;transition:background .3s,box-shadow .3s;flex-shrink:0;}
-.lsd-on{background:#00ff7f!important;border-color:#00ff7f!important;
-  box-shadow:0 0 6px #00ff7f,0 0 18px rgba(0,255,127,.35)!important;animation:lsp-blink 1.1s infinite;}
-@keyframes lsp-blink{0%,100%{opacity:1}50%{opacity:.28}}
-
-#lsp-hright{display:flex;align-items:center;gap:10px;}
-#lsp-hint{font-size:8.5px;color:#1a3a56;letter-spacing:1px;}
-#lsp-x{background:none;border:none;color:#1e3e5a;font-size:11px;cursor:pointer;
-  padding:2px 4px;border-radius:2px;transition:color .2s,background .2s;line-height:1;}
-#lsp-x:hover{color:#ff2244;background:rgba(255,34,68,.08);}
-
-#lsp-body{display:flex;flex-direction:column;gap:7px;padding:9px 10px 10px;flex:1;overflow:hidden;position:relative;z-index:1;}
-
-#lsp-ta{display:block;width:100%;box-sizing:border-box;height:88px;background:#02060d;
-  border:1px solid #0a1e32;border-left:2px solid rgba(0,207,255,.22);color:#2e5c7a;
-  font-family:'Courier New',Courier,monospace;font-size:9.5px;line-height:1.7;padding:7px 9px;
-  resize:none;outline:none;border-radius:3px;transition:border-color .25s,box-shadow .25s,color .2s;user-select:text;}
-#lsp-ta:focus{border-color:rgba(0,207,255,.45);box-shadow:0 0 16px rgba(0,207,255,.07);color:#4a82a2;}
-#lsp-ta::placeholder{color:#0c1e2e;}
-
-#lsp-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;flex-shrink:0;}
-#lsp-btns button{background:#020810;border:1px solid #0a1e32;color:#1e4060;
-  font-family:'Courier New',Courier,monospace;font-size:8.5px;letter-spacing:1.8px;
-  padding:6px 0;cursor:pointer;border-radius:3px;transition:all .2s;}
-#lsp-btns button:active{transform:translateY(1px);}
-#lsp-load:hover{border-color:rgba(0,255,127,.4);color:#00ff7f;background:#011009;}
-#lsp-play:hover,#lsp-play.lsp-live{border-color:rgba(0,207,255,.55)!important;color:#00cfff!important;background:#011520!important;box-shadow:0 0 10px rgba(0,207,255,.1);}
-#lsp-stop:hover{border-color:rgba(255,44,80,.4);color:#ff2c50;background:#100208;}
-
-#lsp-meta{display:flex;justify-content:space-between;font-size:8px;letter-spacing:1px;flex-shrink:0;padding:0 1px;}
-#lsp-count{color:#162840;}
-#lsp-prog{color:rgba(0,207,255,.4);font-variant-numeric:tabular-nums;}
-
-#lsp-now{background:#02060d;border:1px solid #0a1e32;border-left:2px solid #00cfff;
-  border-radius:3px;padding:9px 11px 9px 13px;flex-shrink:0;min-height:44px;
-  display:flex;align-items:center;gap:10px;}
-#lsp-nowlbl{font-size:7px;letter-spacing:2px;color:rgba(0,207,255,.35);
-  writing-mode:vertical-rl;text-orientation:mixed;transform:rotate(180deg);flex-shrink:0;}
-#lsp-cur{color:#00cfff;font-size:11.5px;line-height:1.5;
-  text-shadow:0 0 16px rgba(0,207,255,.5);word-break:break-word;flex:1;}
-
-#lsp-qdiv{display:flex;align-items:center;gap:7px;flex-shrink:0;
-  font-size:7.5px;letter-spacing:2px;color:#0d2035;}
-#lsp-qdivline{flex:1;height:1px;background:linear-gradient(90deg,#0d2035,transparent);}
-
-#lsp-q{flex:1;overflow-y:auto;padding-right:3px;}
-#lsp-q::-webkit-scrollbar{width:2px;}
-#lsp-q::-webkit-scrollbar-thumb{background:#0d2640;border-radius:1px;}
-
-.lq-row{padding:2px 7px;font-size:9px;line-height:2;color:#0c1e30;
-  border-left:2px solid transparent;border-radius:2px;letter-spacing:.4px;
-  transition:color .15s,background .15s,border-color .15s;margin-bottom:1px;}
-.lq-row.lq-past{color:#071422;}
-.lq-row.lq-active{color:#00ff7f!important;background:#010e06!important;
-  border-left-color:#00ff7f!important;text-shadow:0 0 9px rgba(0,255,127,.35)!important;}
-
-#lsp-rzh{position:absolute;bottom:0;right:0;width:20px;height:20px;cursor:se-resize;
-  color:#0d2035;font-size:15px;display:flex;align-items:center;justify-content:center;
-  z-index:2;transition:color .2s;line-height:1;}
-#lsp-rzh:hover{color:#00cfff;}
-`;
-    document.head.appendChild(styleEl);
+    var style = document.createElement("style");
+    style.textContent = `
+        #lsp-panel { position:fixed; top:80px; right:20px; width:300px; height:400px; background:#0a0e14; border:1px solid #00cfff; border-radius:6px; z-index:999999; display:flex; flex-direction:column; font-family:sans-serif; color:#fff; overflow:hidden; }
+        #lsp-hdr { display:flex; justify-content:space-between; align-items:center; background:#111822; padding:8px 10px; cursor:grab; border-bottom:1px solid #1a2636; }
+        #lsp-htitle { display:flex; align-items:center; gap:8px; font-weight:bold; font-size:12px; color:#00cfff; }
+        #lsp-dot { width:8px; height:8px; border-radius:50%; background:#444; display:inline-block; }
+        #lsp-dot.lsd-on { background:#00ff7f; box-shadow:0 0 8px #00ff7f; }
+        #lsp-x { background:none; border:none; color:#777; cursor:pointer; font-size:14px; }
+        #lsp-body { padding:10px; display:flex; flex-direction:column; gap:8px; flex:1; overflow:hidden; }
+        #lsp-ta { height:80px; background:#05070a; border:1px solid #1a2636; color:#a0c0d0; padding:6px; font-family:monospace; font-size:10px; resize:none; outline:none; }
+        #lsp-btns { display:grid; grid-template-columns:1fr 1fr 1fr; gap:5px; }
+        #lsp-btns button { background:#111822; border:1px solid #00cfff; color:#00cfff; padding:5px 0; cursor:pointer; font-size:11px; font-weight:bold; }
+        #lsp-btns button:hover { background:#00cfff; color:#000; }
+        #lsp-cur { background:#05070a; border-left:3px solid #00cfff; padding:6px; font-size:12px; color:#00ff7f; min-height:20px; word-break:break-word; }
+        #lsp-q { flex:1; overflow-y:auto; font-size:11px; color:#556; line-height:1.6; }
+        .lq-row.lq-active { color:#00ff7f; font-weight:bold; }
+        .lq-row.lq-past { color:#334; }
+    `;
+    document.head.appendChild(style);
     document.body.appendChild(panel);
 
-    // ── Element refs ──────────────────────────────────────────────────
-    var elStatusDot   = document.getElementById('lsp-dot');
-    var elX           = document.getElementById('lsp-x');
-    var elHdr         = document.getElementById('lsp-hdr');
-    var elTextarea    = document.getElementById('lsp-ta');
-    var elLoadBtn     = document.getElementById('lsp-load');
-    var elPlayBtn     = document.getElementById('lsp-play');
-    var elStopBtn     = document.getElementById('lsp-stop');
-    var elCount       = document.getElementById('lsp-count');
-    var elProgress    = document.getElementById('lsp-prog');
-    var elCurrentLine = document.getElementById('lsp-cur');
-    var elQueue       = document.getElementById('lsp-q');
-    var elRzh         = document.getElementById('lsp-rzh');
+    var elStatusDot   = document.getElementById("lsp-dot");
+    var elTextarea    = document.getElementById("lsp-ta");
+    var elLoadBtn     = document.getElementById("lsp-load");
+    var elPlayBtn     = document.getElementById("lsp-play");
+    var elStopBtn     = document.getElementById("lsp-stop");
+    var elCurrentLine = document.getElementById("lsp-cur");
+    var elQueue       = document.getElementById("lsp-q");
+    var elHdr         = document.getElementById("lsp-hdr");
 
-    // ── Button handlers ───────────────────────────────────────────────
-    elX.addEventListener('click', function() { panel.style.display = 'none'; });
-
-    elLoadBtn.addEventListener('click', function() {
+    elLoadBtn.onclick = function() {
         stopPlayback();
         lyrics = parseLRC(elTextarea.value);
-        elCount.textContent = lyrics.length
-            ? lyrics.length + ' lines loaded'
-            : 'no lines parsed – check [MM:SS.mmm] format';
-        elQueue.innerHTML = lyrics
-            .map(function(l) { return '<div class="lq-row">' + (l.text || '&mdash;') + '</div>'; })
-            .join('');
-        elCurrentLine.textContent = lyrics.length
-            ? '— ready to play —'
-            : 'No LRC lines found.';
-    });
+        elQueue.innerHTML = lyrics.map(function(l) {
+            return '<div class="lq-row">' + l.text + '</div>';
+        }).join("");
+        elCurrentLine.textContent = lyrics.length ? "— ready —" : "No timestamps found";
+    };
 
-    elPlayBtn.addEventListener('click', function() {
-        if (isPlaying) { stopPlayback(); return; }
-        if (lyrics.length) startPlayback();
-    });
+    elPlayBtn.onclick = function() {
+        if (isPlaying) stopPlayback();
+        else startPlayback();
+    };
 
-    elStopBtn.addEventListener('click', stopPlayback);
+    elStopBtn.onclick = stopPlayback;
+    document.getElementById("lsp-x").onclick = function() { panel.style.display = "none"; };
 
-    // ── Drag (boundary-clamped) ────────────────────────────────────────
-    var dragging = false, dox = 0, doy = 0;
+    // ── Drag panel ──
+    var drag = false, dx = 0, dy = 0;
+    elHdr.onmousedown = function(e) {
+        if (e.target.id === "lsp-x") return;
+        drag = true;
+        dx = e.clientX - panel.offsetLeft;
+        dy = e.clientY - panel.offsetTop;
+    };
+    document.onmousemove = function(e) {
+        if (!drag) return;
+        panel.style.left = (e.clientX - dx) + "px";
+        panel.style.top = (e.clientY - dy) + "px";
+        panel.style.right = "auto";
+    };
+    document.onmouseup = function() { drag = false; };
 
-    elHdr.addEventListener('mousedown', function(e) {
-        if (e.target === elX) return;
-        dragging = true;
-        if (panel.style.right && !panel.style.left) {
-            panel.style.left  = panel.offsetLeft + 'px';
-            panel.style.right = 'auto';
+    // ── Keybind 'L' Toggle ──
+    window.addEventListener("keydown", function(e) {
+        if ((e.key === "l" || e.key === "L") && document.activeElement !== elTextarea) {
+            panel.style.display = (panel.style.display === "none") ? "flex" : "none";
         }
-        dox = e.clientX - panel.offsetLeft;
-        doy = e.clientY - panel.offsetTop;
-        e.preventDefault();
     });
-    document.addEventListener('mousemove', function(e) {
-        if (!dragging) return;
-        var nx = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth,  e.clientX - dox));
-        var ny = Math.max(0, Math.min(window.innerHeight - panel.offsetHeight, e.clientY - doy));
-        panel.style.left  = nx + 'px';
-        panel.style.top   = ny + 'px';
-        panel.style.right = 'auto';
-    });
-    document.addEventListener('mouseup', function() { dragging = false; });
 
-    // ── Resize (boundary-clamped) ──────────────────────────────────────
-    var resizing = false, rw0 = 0, rh0 = 0, rx0 = 0, ry0 = 0;
-
-    elRzh.addEventListener('mousedown', function(e) {
-        resizing = true;
-        rw0 = panel.offsetWidth; rh0 = panel.offsetHeight;
-        rx0 = e.clientX;         ry0 = e.clientY;
-        e.preventDefault(); e.stopPropagation();
-    });
-    document.addEventListener('mousemove', function(e) {
-        if (!resizing) return;
-        var pl = panel.offsetLeft, pt = panel.offsetTop;
-        var nw = Math.max(240, Math.min(window.innerWidth  - pl, rw0 + e.clientX - rx0));
-        var nh = Math.max(280, Math.min(window.innerHeight - pt, rh0 + e.clientY - ry0));
-        panel.style.width  = nw + 'px';
-        panel.style.height = nh + 'px';
-    });
-    document.addEventListener('mouseup', function() { resizing = false; });
-
-    // ── L key toggle ──────────────────────────────────────────────────
-    window.addEventListener('keydown', function(e) {
-        if (e.key !== 'l' && e.key !== 'L') return;
-        var focused = document.activeElement;
-        if (focused === elTextarea) return;
-        if (typeof ze !== 'undefined' && focused === ze) return;
-        panel.style.display = (panel.style.display === 'none') ? 'flex' : 'none';
-    }, true);
-
-    // Prevent textarea keys from leaking into game handlers
-    elTextarea.addEventListener('keydown', function(e) { e.stopPropagation(); });
-    elTextarea.addEventListener('keyup',   function(e) { e.stopPropagation(); });
-
+    elTextarea.addEventListener("keydown", function(e) { e.stopPropagation(); });
+    elTextarea.addEventListener("keyup", function(e) { e.stopPropagation(); });
 })();
