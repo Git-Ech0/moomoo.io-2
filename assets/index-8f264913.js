@@ -4467,21 +4467,19 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (30-char / 600ms Rate-Limited)
+   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (Whitespace & Rate-Limit Fixed)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    // Unique base roots only — no nested duplicates
     var CURSE_ROOTS = [
         "fuck", "shit", "bitch", "nigga", "nigger", "cunt", "dick",
         "cock", "pussy", "slut", "whore", "bastard", "damn", "crap",
         "kill", "rape", "porn", "pedo", "fag", "faggot", "tits"
     ];
 
-    // Priority-ordered visual substitutions (highest visual match first)
     var VISUAL_RULES = [
         { match: /i/i, sub: '1' },
         { match: /s/i, sub: '$' },
@@ -4508,11 +4506,9 @@ window.config = y;
         if (!text) return "";
         var result = text;
 
-        // Strict isolated word checks
         result = result.replace(/\b(ass|asses|asshole|assholes)\b/gi, leetifyCurseWord);
         result = result.replace(/\b(die|dies|died|dying)\b/gi, leetifyCurseWord);
 
-        // General curse patterns
         CURSE_ROOTS.forEach(function(root) {
             var reg = new RegExp("\\b" + root + "\\w*\\b", "gi");
             result = result.replace(reg, leetifyCurseWord);
@@ -4521,14 +4517,15 @@ window.config = y;
         return result;
     }
 
-    // ── 1. Sanitize to ASCII & Filter ──
+    // ── 1. Sanitize to ASCII (Preserving Word Spaces) ──
     function sanitizeText(text) {
         if (!text) return "";
         var clean = text
-            .replace(/[\u2018\u2019]/g, "'") // Standardize single quotes
-            .replace(/[\u201C\u201D]/g, '"') // Standardize double quotes
+            .replace(/[\u2018\u2019]/g, "'") // Convert smart apostrophes
+            .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes
             .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Strip accents
-            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII
+            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII characters
+            .replace(/\s+/g, " ")            // Normalize multiple spaces to a single space
             .trim();
 
         return filterBadWords(clean);
@@ -4563,30 +4560,33 @@ window.config = y;
         return chunks;
     }
 
-    // ── 3. UltraStar (.txt) Parser ──
+    // ── 3. UltraStar Parser (Fixed Whitespace Preservation) ──
     function parseUltraStar(raw) {
-        var lines = raw.split("\n");
+        // Strip carriage returns only — DO NOT TRIM LINES to preserve trailing syllable spaces
+        var lines = raw.replace(/\r/g, "").split("\n");
         var bpm = 120;
         var gap = 0;
         var phrases = [];
         var currentPhrase = { time: null, text: "" };
 
         for (var i = 0; i < lines.length; i++) {
-            var line = lines[i].trim();
-            if (!line) continue;
+            var line = lines[i];
+            if (!line || !line.trim()) continue;
 
-            if (line.indexOf("#BPM:") === 0) {
-                bpm = parseFloat(line.split(":")[1].replace(",", "."));
-            } else if (line.indexOf("#GAP:") === 0) {
-                gap = parseFloat(line.split(":")[1].replace(",", "."));
-            } else if (line.charAt(0) === ":" || line.charAt(0) === "*" || line.charAt(0) === "F") {
-                // Syntax: [Type] [StartBeat] [Duration] [Pitch] [Syllable]
-                var match = line.match(/^([:\*F])\s+(-?\d+)\s+(\d+)\s+(-?\d+)\s?(.*)$/);
+            var trimmedStart = line.replace(/^\s+/, "");
+
+            if (trimmedStart.indexOf("#BPM:") === 0) {
+                bpm = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
+            } else if (trimmedStart.indexOf("#GAP:") === 0) {
+                gap = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
+            } else if (/^[:\*F]/.test(trimmedStart)) {
+                // Match: [Type] [StartBeat] [Duration] [Pitch] [Exact Syllable with Space]
+                var match = trimmedStart.match(/^([:\*F])\s+(-?\d+)\s+(\d+)\s+(-?\d+)(?:\s(.*))?$/);
                 if (match) {
                     var startBeat = parseInt(match[2], 10);
-                    var syllable = match[5] || "";
+                    // match[5] captures the syllable AND its trailing space (e.g., "was ")
+                    var syllable = match[5] !== undefined ? match[5] : "";
                     
-                    // UltraStar timing: (beat * 15000 / BPM) ms
                     var timeMs = gap + (startBeat * (15000 / bpm));
 
                     if (currentPhrase.time === null) {
@@ -4594,7 +4594,7 @@ window.config = y;
                     }
                     currentPhrase.text += syllable;
                 }
-            } else if (line.charAt(0) === "-") {
+            } else if (/^-/.test(trimmedStart)) {
                 // Line break separator
                 if (currentPhrase.text.trim().length > 0) {
                     phrases.push(currentPhrase);
@@ -4629,7 +4629,7 @@ window.config = y;
         return out;
     }
 
-    // ── 5. Master Parser & 600ms Queue Scheduler ──
+    // ── 5. Master Processor with Strict 600ms Non-Overlap Scheduling ──
     function processRawInput(raw) {
         var rawPhrases = [];
         if (raw.indexOf("#BPM:") !== -1 || raw.match(/^[:\*F]\s+\d+/m)) {
@@ -4640,7 +4640,6 @@ window.config = y;
 
         if (!rawPhrases.length) return [];
 
-        // Chunk each line to max 30 characters
         var intermediate = [];
         for (var i = 0; i < rawPhrases.length; i++) {
             var item = rawPhrases[i];
@@ -4666,7 +4665,7 @@ window.config = y;
 
         intermediate.sort(function(a, b) { return a.time - b.time; });
 
-        // Enforce the strict 600ms message rate-limit
+        // Enforce the 600ms rate-limit per message
         var scheduled = [];
         var lastTime = -999999;
         var RATE_LIMIT_MS = 600;
@@ -4698,7 +4697,7 @@ window.config = y;
                 if (!isPlaying) return;
 
                 activateLine(idx);
-                on(line.text); // Sends packet to MooMoo chat
+                on(line.text);
 
             }, Math.max(0, line.time));
 
