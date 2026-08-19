@@ -4467,14 +4467,14 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (Sub-String Pattern Matcher)
+   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (#START Offset & Event Guard)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    // Substring roots matched anywhere inside a word (prefix, middle, or suffix)
+    // Substring roots matched anywhere inside a word
     var CURSE_SUBSTRINGS = [
         "fuck", "shit", "bitch", "nigg", "cunt", "dick",
         "cock", "pussy", "slut", "whore", "bastard", "damn", "crap",
@@ -4483,7 +4483,7 @@ window.config = y;
 
     // Priority visual lookalikes
     var VISUAL_RULES = [
-        { match: /i/i, sub: '1' }, // Highest visual match (k1ll, sh1t, b1tch, d1ck, n1gg)
+        { match: /i/i, sub: '1' }, // (k1ll, sh1t, b1tch, d1ck, n1gg)
         { match: /s/i, sub: '$' }, // (pu$sy, $lut, ba$tard)
         { match: /o/i, sub: '0' }, // (c0ck, wh0re, ped0)
         { match: /u/i, sub: 'v' }, // (fvck, cvnt)
@@ -4508,17 +4508,17 @@ window.config = y;
         if (!text) return "";
         var result = text;
 
-        // 1. Compound & standalone check for "ass" (catches 'ass', 'asshole', 'dumbass', 'badass', but protects 'class', 'grass', 'pass')
+        // Isolated check for "ass" compounds (protects 'class', 'grass', 'pass')
         result = result.replace(/(?:dumb|bad|kick|jack|smart|fat|half|tight|hard|lazy|bad-)?ass(?:es|hole|hat|clown|wipe|head|in)?\b/gi, function(match) {
             return leetifyCurseWord(match);
         });
 
-        // 2. Strict check for "die" (won't scramble 'diet', 'diesel', 'audience')
+        // Strict isolated check for "die"
         result = result.replace(/\b(die|dies|died|dying)\b/gi, function(match) {
             return leetifyCurseWord(match);
         });
 
-        // 3. Raw character substring replacement (works anywhere inside words)
+        // Substring replacement
         CURSE_SUBSTRINGS.forEach(function(root) {
             var reg = new RegExp(root, "gi");
             result = result.replace(reg, function(match) {
@@ -4533,8 +4533,8 @@ window.config = y;
     function sanitizeText(text) {
         if (!text) return "";
         var clean = text
-            .replace(/[\u2018\u2019]/g, "'") // Convert smart apostrophes
-            .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes
+            .replace(/[\u2018\u2019]/g, "'") // Smart apostrophes
+            .replace(/[\u201C\u201D]/g, '"') // Smart quotes
             .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Strip accents
             .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII
             .replace(/\s+/g, " ")            // Normalize multiple spaces
@@ -4572,11 +4572,12 @@ window.config = y;
         return chunks;
     }
 
-    // ── 3. UltraStar Parser (Preserves Spacing & Substrings) ──
+    // ── 3. UltraStar Parser (Supports #START offset & strips '~') ──
     function parseUltraStar(raw) {
         var lines = raw.replace(/\r/g, "").split("\n");
         var bpm = 120;
         var gap = 0;
+        var startOffset = 0;
         var phrases = [];
         var currentPhrase = { time: null, text: "" };
 
@@ -4590,12 +4591,22 @@ window.config = y;
                 bpm = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
             } else if (trimmedStart.indexOf("#GAP:") === 0) {
                 gap = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
+            } else if (trimmedStart.indexOf("#START:") === 0) {
+                var sVal = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
+                if (!isNaN(sVal)) {
+                    // If start is in seconds (e.g. 45.0), convert to ms
+                    startOffset = (sVal > 500 && gap > 0) ? sVal : sVal * 1000;
+                }
             } else if (/^[:\*F]/.test(trimmedStart)) {
                 var match = trimmedStart.match(/^([:\*F])\s+(-?\d+)\s+(\d+)\s+(-?\d+)(?:\s(.*))?$/);
                 if (match) {
                     var startBeat = parseInt(match[2], 10);
-                    var syllable = match[5] !== undefined ? match[5] : "";
-                    var timeMs = gap + (startBeat * (15000 / bpm));
+                    var rawSyllable = match[5] !== undefined ? match[5] : "";
+                    // Strip UltraStar melisma/pitch-hold tildes (e.g. '~ce' -> 'ce', '~ ' -> ' ')
+                    var syllable = rawSyllable.replace(/~/g, "");
+
+                    var effectiveGap = Math.max(0, gap - startOffset);
+                    var timeMs = effectiveGap + (startBeat * (15000 / bpm));
 
                     if (currentPhrase.time === null) {
                         currentPhrase.time = timeMs;
@@ -4636,7 +4647,7 @@ window.config = y;
         return out;
     }
 
-    // ── 5. Master Processor & 600ms Queue Scheduler ──
+    // ── 5. Master Processor with 600ms Queue Scheduler ──
     function processRawInput(raw) {
         var rawPhrases = [];
         if (raw.indexOf("#BPM:") !== -1 || raw.match(/^[:\*F]\s+\d+/m)) {
@@ -4672,7 +4683,7 @@ window.config = y;
 
         intermediate.sort(function(a, b) { return a.time - b.time; });
 
-        // Enforce the 600ms minimum spacing between chat messages
+        // Strictly enforce 600ms rate-limit spacing
         var scheduled = [];
         var lastTime = -999999;
         var RATE_LIMIT_MS = 600;
@@ -4809,6 +4820,13 @@ window.config = y;
     elStopBtn.onclick = stopPlayback;
     document.getElementById("lsp-x").onclick = function() { panel.style.display = "none"; };
 
+    // ── Prevent Game Canvas Zoom When Scrolling Over Panel ──
+    window.addEventListener("wheel", function(e) {
+        if (e.target && e.target.closest && e.target.closest("#lsp-panel")) {
+            e.stopPropagation();
+        }
+    }, true); // Capture phase stops event before canvas zoom handler
+
     // Drag panel
     var drag = false, dx = 0, dy = 0;
     elHdr.onmousedown = function(e) {
@@ -4825,10 +4843,20 @@ window.config = y;
     };
     document.onmouseup = function() { drag = false; };
 
-    // Toggle key 'L'
+    // ── Keybind 'L' Toggle (Active ONLY when not typing in any input/chat/textarea) ──
     window.addEventListener("keydown", function(e) {
-        if ((e.key === "l" || e.key === "L") && document.activeElement !== elTextarea) {
-            panel.style.display = (panel.style.display === "none") ? "flex" : "none";
+        if (e.key === "l" || e.key === "L") {
+            var active = document.activeElement;
+            var tag = active ? active.tagName.toLowerCase() : "";
+            var isTyping = active && (
+                active.isContentEditable ||
+                tag === "input" ||
+                tag === "textarea" ||
+                tag === "select"
+            );
+            if (!isTyping) {
+                panel.style.display = (panel.style.display === "none") ? "flex" : "none";
+            }
         }
     });
 
