@@ -4467,7 +4467,7 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ SMART LYRIC SYNC ENGINE (Single-Char Visual Leetspeak Bypass)
+   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (30-char / 600ms Rate-Limited)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
@@ -4481,73 +4481,62 @@ window.config = y;
         "kill", "rape", "porn", "pedo", "fag", "faggot", "tits"
     ];
 
-    // Priority-ordered visual substitutions (highest similarity first)
+    // Priority-ordered visual substitutions (highest visual match first)
     var VISUAL_RULES = [
-        { match: /i/i, sub: '1' }, // Highest visual match (k1ll, sh1t, b1tch, d1ck, n1gga)
-        { match: /s/i, sub: '$' }, // (pu$sy, a$s, $lut, ba$tard)
-        { match: /o/i, sub: '0' }, // (c0ck, wh0re, p0rn, ped0)
-        { match: /u/i, sub: 'v' }, // (fvck, cvnt)
-        { match: /e/i, sub: '3' }, // (r3pe, p3do)
-        { match: /a/i, sub: '@' }, // (d@mn, cr@p, f@g)
+        { match: /i/i, sub: '1' },
+        { match: /s/i, sub: '$' },
+        { match: /o/i, sub: '0' },
+        { match: /u/i, sub: 'v' },
+        { match: /e/i, sub: '3' },
+        { match: /a/i, sub: '@' },
         { match: /t/i, sub: '7' },
         { match: /l/i, sub: '1' },
         { match: /b/i, sub: '8' }
     ];
 
-    // Replaces EXACTLY ONE letter in the curse word with its best visual lookalike
     function leetifyCurseWord(word) {
         if (!word) return word;
-
         for (var i = 0; i < VISUAL_RULES.length; i++) {
             if (VISUAL_RULES[i].match.test(word)) {
-                // Replaces only the first matching letter
                 return word.replace(VISUAL_RULES[i].match, VISUAL_RULES[i].sub);
             }
         }
         return word;
     }
 
-    // Scans text and applies single-character leetify to cursed roots
     function filterBadWords(text) {
         if (!text) return "";
         var result = text;
 
-        // 1. Strict isolated check for "ass" (never touches pass, class, grass, assume)
-        result = result.replace(/\b(ass|asses|asshole|assholes)\b/gi, function(match) {
-            return leetifyCurseWord(match);
-        });
+        // Strict isolated word checks
+        result = result.replace(/\b(ass|asses|asshole|assholes)\b/gi, leetifyCurseWord);
+        result = result.replace(/\b(die|dies|died|dying)\b/gi, leetifyCurseWord);
 
-        // 2. Strict isolated check for "die" (never touches diet, diesel)
-        result = result.replace(/\b(die|dies|died|dying)\b/gi, function(match) {
-            return leetifyCurseWord(match);
-        });
-
-        // 3. Process all unique curse roots and their natural word extensions
+        // General curse patterns
         CURSE_ROOTS.forEach(function(root) {
             var reg = new RegExp("\\b" + root + "\\w*\\b", "gi");
-            result = result.replace(reg, function(match) {
-                return leetifyCurseWord(match);
-            });
+            result = result.replace(reg, leetifyCurseWord);
         });
 
         return result;
     }
 
-    // ── 1. Sanitize to pure ASCII & Clean Quotes ──
+    // ── 1. Sanitize to ASCII & Filter ──
     function sanitizeText(text) {
         if (!text) return "";
         var clean = text
-            .replace(/[\u2018\u2019]/g, "'") // Convert curly apostrophes to '
-            .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes to "
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // é -> e, etc.
-            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII characters
+            .replace(/[\u2018\u2019]/g, "'") // Standardize single quotes
+            .replace(/[\u201C\u201D]/g, '"') // Standardize double quotes
+            .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Strip accents
+            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII
             .trim();
 
         return filterBadWords(clean);
     }
 
-    // ── 2. Smart Word-Boundary Splitter (Under 30 chars per chunk) ──
+    // ── 2. Word-Boundary Splitter (Under 30 chars per chunk) ──
     function splitIntoChunks(text, maxLen) {
+        maxLen = maxLen || 30;
         if (!text || text.length <= maxLen) return [text];
         var words = text.split(/\s+/);
         var chunks = [];
@@ -4574,39 +4563,100 @@ window.config = y;
         return chunks;
     }
 
-    // ── 3. LRC Parser with Automatic Intermediate Timing ──
+    // ── 3. UltraStar (.txt) Parser ──
+    function parseUltraStar(raw) {
+        var lines = raw.split("\n");
+        var bpm = 120;
+        var gap = 0;
+        var phrases = [];
+        var currentPhrase = { time: null, text: "" };
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+
+            if (line.indexOf("#BPM:") === 0) {
+                bpm = parseFloat(line.split(":")[1].replace(",", "."));
+            } else if (line.indexOf("#GAP:") === 0) {
+                gap = parseFloat(line.split(":")[1].replace(",", "."));
+            } else if (line.charAt(0) === ":" || line.charAt(0) === "*" || line.charAt(0) === "F") {
+                // Syntax: [Type] [StartBeat] [Duration] [Pitch] [Syllable]
+                var match = line.match(/^([:\*F])\s+(-?\d+)\s+(\d+)\s+(-?\d+)\s?(.*)$/);
+                if (match) {
+                    var startBeat = parseInt(match[2], 10);
+                    var syllable = match[5] || "";
+                    
+                    // UltraStar timing: (beat * 15000 / BPM) ms
+                    var timeMs = gap + (startBeat * (15000 / bpm));
+
+                    if (currentPhrase.time === null) {
+                        currentPhrase.time = timeMs;
+                    }
+                    currentPhrase.text += syllable;
+                }
+            } else if (line.charAt(0) === "-") {
+                // Line break separator
+                if (currentPhrase.text.trim().length > 0) {
+                    phrases.push(currentPhrase);
+                }
+                currentPhrase = { time: null, text: "" };
+            }
+        }
+
+        if (currentPhrase.text.trim().length > 0) {
+            phrases.push(currentPhrase);
+        }
+
+        return phrases;
+    }
+
+    // ── 4. Standard LRC Parser ──
     function parseLRC(raw) {
         var rawLines = raw.split("\n");
         var reg = /\[(\d{1,2}):(\d{1,2}(?:\.\d{1,3})?)\](.*)/;
-        var temp = [];
+        var out = [];
 
         rawLines.forEach(function(line) {
             var m = line.trim().match(reg);
             if (!m) return;
             var min = parseFloat(m[1]);
             var sec = parseFloat(m[2]);
-            var text = sanitizeText(m[3]);
+            var text = m[3].trim();
             if (text && !text.startsWith("(") && !text.endsWith(")")) {
-                temp.push({ time: (min * 60 + sec) * 1000, text: text });
+                out.push({ time: (min * 60 + sec) * 1000, text: text });
             }
         });
+        return out;
+    }
 
-        temp.sort(function(a, b) { return a.time - b.time; });
+    // ── 5. Master Parser & 600ms Queue Scheduler ──
+    function processRawInput(raw) {
+        var rawPhrases = [];
+        if (raw.indexOf("#BPM:") !== -1 || raw.match(/^[:\*F]\s+\d+/m)) {
+            rawPhrases = parseUltraStar(raw);
+        } else {
+            rawPhrases = parseLRC(raw);
+        }
 
-        var out = [];
-        for (var i = 0; i < temp.length; i++) {
-            var item = temp[i];
-            var chunks = splitIntoChunks(item.text, 30);
+        if (!rawPhrases.length) return [];
 
-            if (chunks.length <= 1) {
-                out.push({ time: item.time, text: chunks[0] });
+        // Chunk each line to max 30 characters
+        var intermediate = [];
+        for (var i = 0; i < rawPhrases.length; i++) {
+            var item = rawPhrases[i];
+            var clean = sanitizeText(item.text);
+            if (!clean) continue;
+
+            var chunks = splitIntoChunks(clean, 30);
+            if (chunks.length === 1) {
+                intermediate.push({ time: item.time, text: chunks[0] });
             } else {
-                var nextTime = (i + 1 < temp.length) ? temp[i + 1].time : item.time + 3000;
-                var windowDuration = Math.max(1000, nextTime - item.time);
-                var step = Math.min(1500, windowDuration / chunks.length);
+                var nextTime = (i + 1 < rawPhrases.length) ? rawPhrases[i + 1].time : item.time + (chunks.length * 650);
+                var windowDuration = Math.max(chunks.length * 600, nextTime - item.time);
+                var step = Math.max(600, windowDuration / chunks.length);
 
                 for (var c = 0; c < chunks.length; c++) {
-                    out.push({
+                    intermediate.push({
                         time: item.time + (c * step),
                         text: chunks[c]
                     });
@@ -4614,10 +4664,29 @@ window.config = y;
             }
         }
 
-        return out;
+        intermediate.sort(function(a, b) { return a.time - b.time; });
+
+        // Enforce the strict 600ms message rate-limit
+        var scheduled = [];
+        var lastTime = -999999;
+        var RATE_LIMIT_MS = 600;
+
+        for (var k = 0; k < intermediate.length; k++) {
+            var targetTime = intermediate[k].time;
+            if (targetTime < lastTime + RATE_LIMIT_MS) {
+                targetTime = lastTime + RATE_LIMIT_MS;
+            }
+            lastTime = targetTime;
+            scheduled.push({
+                time: Math.round(targetTime),
+                text: intermediate[k].text
+            });
+        }
+
+        return scheduled;
     }
 
-    // ── 4. Playback Engine ──
+    // ── 6. Playback Engine ──
     function startPlayback() {
         if (!lyrics.length) return;
         stopPlayback();
@@ -4629,7 +4698,7 @@ window.config = y;
                 if (!isPlaying) return;
 
                 activateLine(idx);
-                on(line.text); // Sends to MooMoo chat
+                on(line.text); // Sends packet to MooMoo chat
 
             }, Math.max(0, line.time));
 
@@ -4646,7 +4715,7 @@ window.config = y;
         lineTimers.forEach(clearTimeout);
         lineTimers = [];
         applyPlayState();
-        elCurrentLine.textContent = lyrics.length ? "— ready —" : "Paste lyrics and press LOAD";
+        elCurrentLine.textContent = lyrics.length ? "— ready —" : "Paste UltraStar/LRC and press LOAD";
         elQueue.querySelectorAll(".lq-row").forEach(function(el) {
             el.classList.remove("lq-active", "lq-past");
         });
@@ -4670,19 +4739,19 @@ window.config = y;
         });
     }
 
-    // ── 5. UI Setup ──
+    // ── 7. UI Setup ──
     var panel = document.createElement("div");
     panel.id = "lsp-panel";
     panel.innerHTML = [
         '<div id="lsp-hdr"><div id="lsp-htitle"><span id="lsp-dot"></span><span>LYRIC SYNC</span></div><button id="lsp-x">&#x2715;</button></div>',
         '<div id="lsp-body">',
-        '  <textarea id="lsp-ta" placeholder="Paste [mm:ss.xx] LRC here..."></textarea>',
+        '  <textarea id="lsp-ta" placeholder="Paste UltraStar (.txt) or [mm:ss.xx] LRC here..."></textarea>',
         '  <div id="lsp-btns">',
         '    <button id="lsp-load">LOAD</button>',
         '    <button id="lsp-play">PLAY</button>',
         '    <button id="lsp-stop">STOP</button>',
         '  </div>',
-        '  <div id="lsp-cur">Paste lyrics and press LOAD</div>',
+        '  <div id="lsp-cur">Paste UltraStar/LRC and press LOAD</div>',
         '  <div id="lsp-q"></div>',
         '</div>'
     ].join("");
@@ -4719,11 +4788,11 @@ window.config = y;
 
     elLoadBtn.onclick = function() {
         stopPlayback();
-        lyrics = parseLRC(elTextarea.value);
+        lyrics = processRawInput(elTextarea.value);
         elQueue.innerHTML = lyrics.map(function(l) {
-            return '<div class="lq-row">' + l.text + '</div>';
+            return '<div class="lq-row">[' + (l.time / 1000).toFixed(1) + 's] ' + l.text + '</div>';
         }).join("");
-        elCurrentLine.textContent = lyrics.length ? (lyrics.length + " lines loaded") : "No timestamps found";
+        elCurrentLine.textContent = lyrics.length ? (lyrics.length + " chunks prepared") : "No valid notes found";
     };
 
     elPlayBtn.onclick = function() {
@@ -4750,7 +4819,7 @@ window.config = y;
     };
     document.onmouseup = function() { drag = false; };
 
-    // Keybind 'L' Toggle
+    // Toggle key 'L'
     window.addEventListener("keydown", function(e) {
         if ((e.key === "l" || e.key === "L") && document.activeElement !== elTextarea) {
             panel.style.display = (panel.style.display === "none") ? "flex" : "none";
