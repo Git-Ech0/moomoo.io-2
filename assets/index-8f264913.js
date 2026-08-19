@@ -4467,65 +4467,77 @@ window.changeStoreIndex = sl;
 window.config = y;
 
 /* ════════════════════════════════════════════════════════════════════
-   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (Whitespace & Rate-Limit Fixed)
+   ◈ ULTRASTAR & LRC SMART SYNC ENGINE (Sub-String Pattern Matcher)
    ════════════════════════════════════════════════════════════════════ */
 ;(function () {
     var lyrics = [];
     var isPlaying = false;
     var lineTimers = [];
 
-    var CURSE_ROOTS = [
-        "fuck", "shit", "bitch", "nigga", "nigger", "cunt", "dick",
+    // Substring roots matched anywhere inside a word (prefix, middle, or suffix)
+    var CURSE_SUBSTRINGS = [
+        "fuck", "shit", "bitch", "nigg", "cunt", "dick",
         "cock", "pussy", "slut", "whore", "bastard", "damn", "crap",
-        "kill", "rape", "porn", "pedo", "fag", "faggot", "tits"
+        "kill", "rape", "pedo", "fag", "tits"
     ];
 
+    // Priority visual lookalikes
     var VISUAL_RULES = [
-        { match: /i/i, sub: '1' },
-        { match: /s/i, sub: '$' },
-        { match: /o/i, sub: '0' },
-        { match: /u/i, sub: 'v' },
-        { match: /e/i, sub: '3' },
-        { match: /a/i, sub: '@' },
+        { match: /i/i, sub: '1' }, // Highest visual match (k1ll, sh1t, b1tch, d1ck, n1gg)
+        { match: /s/i, sub: '$' }, // (pu$sy, $lut, ba$tard)
+        { match: /o/i, sub: '0' }, // (c0ck, wh0re, ped0)
+        { match: /u/i, sub: 'v' }, // (fvck, cvnt)
+        { match: /e/i, sub: '3' }, // (r3pe, p3do)
+        { match: /a/i, sub: '@' }, // (d@mn, cr@p, f@g)
         { match: /t/i, sub: '7' },
         { match: /l/i, sub: '1' },
         { match: /b/i, sub: '8' }
     ];
 
-    function leetifyCurseWord(word) {
-        if (!word) return word;
+    function leetifyCurseWord(str) {
+        if (!str) return str;
         for (var i = 0; i < VISUAL_RULES.length; i++) {
-            if (VISUAL_RULES[i].match.test(word)) {
-                return word.replace(VISUAL_RULES[i].match, VISUAL_RULES[i].sub);
+            if (VISUAL_RULES[i].match.test(str)) {
+                return str.replace(VISUAL_RULES[i].match, VISUAL_RULES[i].sub);
             }
         }
-        return word;
+        return str;
     }
 
     function filterBadWords(text) {
         if (!text) return "";
         var result = text;
 
-        result = result.replace(/\b(ass|asses|asshole|assholes)\b/gi, leetifyCurseWord);
-        result = result.replace(/\b(die|dies|died|dying)\b/gi, leetifyCurseWord);
+        // 1. Compound & standalone check for "ass" (catches 'ass', 'asshole', 'dumbass', 'badass', but protects 'class', 'grass', 'pass')
+        result = result.replace(/(?:dumb|bad|kick|jack|smart|fat|half|tight|hard|lazy|bad-)?ass(?:es|hole|hat|clown|wipe|head|in)?\b/gi, function(match) {
+            return leetifyCurseWord(match);
+        });
 
-        CURSE_ROOTS.forEach(function(root) {
-            var reg = new RegExp("\\b" + root + "\\w*\\b", "gi");
-            result = result.replace(reg, leetifyCurseWord);
+        // 2. Strict check for "die" (won't scramble 'diet', 'diesel', 'audience')
+        result = result.replace(/\b(die|dies|died|dying)\b/gi, function(match) {
+            return leetifyCurseWord(match);
+        });
+
+        // 3. Raw character substring replacement (works anywhere inside words)
+        CURSE_SUBSTRINGS.forEach(function(root) {
+            var reg = new RegExp(root, "gi");
+            result = result.replace(reg, function(match) {
+                return leetifyCurseWord(match);
+            });
         });
 
         return result;
     }
 
-    // ── 1. Sanitize to ASCII (Preserving Word Spaces) ──
+    // ── 1. Sanitize to ASCII & Filter ──
     function sanitizeText(text) {
         if (!text) return "";
         var clean = text
             .replace(/[\u2018\u2019]/g, "'") // Convert smart apostrophes
             .replace(/[\u201C\u201D]/g, '"') // Convert smart quotes
             .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Strip accents
-            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII characters
-            .replace(/\s+/g, " ")            // Normalize multiple spaces to a single space
+            .replace(/[^\x20-\x7E]/g, "")    // Strip non-ASCII
+            .replace(/\s+/g, " ")            // Normalize multiple spaces
             .trim();
 
         return filterBadWords(clean);
@@ -4560,9 +4572,8 @@ window.config = y;
         return chunks;
     }
 
-    // ── 3. UltraStar Parser (Fixed Whitespace Preservation) ──
+    // ── 3. UltraStar Parser (Preserves Spacing & Substrings) ──
     function parseUltraStar(raw) {
-        // Strip carriage returns only — DO NOT TRIM LINES to preserve trailing syllable spaces
         var lines = raw.replace(/\r/g, "").split("\n");
         var bpm = 120;
         var gap = 0;
@@ -4580,13 +4591,10 @@ window.config = y;
             } else if (trimmedStart.indexOf("#GAP:") === 0) {
                 gap = parseFloat(trimmedStart.split(":")[1].replace(",", "."));
             } else if (/^[:\*F]/.test(trimmedStart)) {
-                // Match: [Type] [StartBeat] [Duration] [Pitch] [Exact Syllable with Space]
                 var match = trimmedStart.match(/^([:\*F])\s+(-?\d+)\s+(\d+)\s+(-?\d+)(?:\s(.*))?$/);
                 if (match) {
                     var startBeat = parseInt(match[2], 10);
-                    // match[5] captures the syllable AND its trailing space (e.g., "was ")
                     var syllable = match[5] !== undefined ? match[5] : "";
-                    
                     var timeMs = gap + (startBeat * (15000 / bpm));
 
                     if (currentPhrase.time === null) {
@@ -4595,7 +4603,6 @@ window.config = y;
                     currentPhrase.text += syllable;
                 }
             } else if (/^-/.test(trimmedStart)) {
-                // Line break separator
                 if (currentPhrase.text.trim().length > 0) {
                     phrases.push(currentPhrase);
                 }
@@ -4629,7 +4636,7 @@ window.config = y;
         return out;
     }
 
-    // ── 5. Master Processor with Strict 600ms Non-Overlap Scheduling ──
+    // ── 5. Master Processor & 600ms Queue Scheduler ──
     function processRawInput(raw) {
         var rawPhrases = [];
         if (raw.indexOf("#BPM:") !== -1 || raw.match(/^[:\*F]\s+\d+/m)) {
@@ -4665,7 +4672,7 @@ window.config = y;
 
         intermediate.sort(function(a, b) { return a.time - b.time; });
 
-        // Enforce the 600ms rate-limit per message
+        // Enforce the 600ms minimum spacing between chat messages
         var scheduled = [];
         var lastTime = -999999;
         var RATE_LIMIT_MS = 600;
