@@ -2849,6 +2849,7 @@ var vi = !1;
 (!pi || We) && (vi = !0);
 window.onblur = function() {
     for (const k in _hkHeld) { _hkHoldStop(k); }
+    _tKeyHeld = false;
     xi = !1
 };
 window.onfocus = function() {
@@ -3579,6 +3580,7 @@ var ne = {},
 
 function Pi() {
     for (const k in _hkHeld) { _hkHoldStop(k); }
+    _tKeyHeld = false;
     ne = {}, O.send("e")
 }
 
@@ -3591,6 +3593,9 @@ function ml(e) {
     if (t == 27) { Gn(); return; }
     if (!v || !v.alive || !Jn() || ne[t]) return;
     ne[t] = 1;
+
+    // ── T key: damage boost hat trigger on swing ──
+    if (t == 84) { _tKeyHeld = true; return; }
 
     // ── Hotkey place: instant 0ms trigger + hold-to-repeat ──
     if (_HK_SLOT[t] !== undefined) { _hkHoldStart(t, _HK_SLOT[t]); return; }
@@ -3614,6 +3619,7 @@ function pl(e) {
             if (J.style.display === "block") return;
             Yn()
         } else {
+            if (t == 84) { _tKeyHeld = false; }
             // ── Stop hold loop on key release ──
             if (_HK_SLOT[t] !== undefined) {
                 _hkHoldStop(t);
@@ -3808,6 +3814,9 @@ let yt = 99999;
 
 function Sl() {
     for (const k in _hkHeld) { _hkHoldStop(k); }
+    _tKeyHeld = false;
+    if (_hatOverrideTimer) { clearTimeout(_hatOverrideTimer); _hatOverrideTimer = null; }
+    if (_accOverrideTimer) { clearTimeout(_accOverrideTimer); _accOverrideTimer = null; }
     et = !1, kl();
     if (v) v.alive = false;
     
@@ -4190,10 +4199,12 @@ function Pl(e, t, i) {
     r = Rt(e);
     if (r) {
         r.startAnim(t, i);
-        // Track melee weapon reload
-        if (r === v && b.weapons[v.weaponIndex]) {
-            v.reloadMax = b.weapons[v.weaponIndex].speed;
-            v.reloadTimer = v.reloadMax;
+        if (r === v) {
+            _onAttackTick(i);
+            if (b.weapons[v.weaponIndex]) {
+                v.reloadMax = b.weapons[v.weaponIndex].speed;
+                v.reloadTimer = v.reloadMax;
+            }
         }
     }
 }
@@ -4603,7 +4614,7 @@ window.requestAnimFrame = function() {
 }();
 
 function as() {
-    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), requestAnimFrame(as)
+    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), _updateBaseEquip(), requestAnimFrame(as)
 }
 Hl();
 as();
@@ -4630,6 +4641,7 @@ const _autoBuyHatList = [
     { id: 6,  isAcc: false, price: 4000,  name: "Soldier Helmet" },
     { id: 31, isAcc: false, price: 2500,  name: "Flipper Hat"    },
     { id: 12, isAcc: false, price: 6000,  name: "Booster Hat"    },
+    { id: 22, isAcc: false, price: 6000,  name: "Emp Helmet"     },
     { id: 7,  isAcc: false, price: 6000,  name: "Bull Helmet"    },
     { id: 40, isAcc: false, price: 15000, name: "Tank Gear"      },
     { id: 19, isAcc: true,  price: 15000, name: "Shadow Wings"   },
@@ -4652,6 +4664,166 @@ setInterval(function _tickAutoBuyHat() {
         break; // only attempt the first un-owned item this tick
     }
 }, 1000);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTOMATED COMBAT HAT & ACCESSORY MACRO SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const _DAMAGE_DEALING_WEAPONS = [1, 2, 3, 4, 5, 7]; // Hand Axe, Great Axe, Short Sword, Katana, Spear/Polearm, Daggers
+
+let _tKeyHeld = false;
+let _hatOverrideTimer = null;
+let _accOverrideTimer = null;
+
+function _hasDamageDealingPrimary(player) {
+    if (!player) return false;
+    const primId = (player.weapons && player.weapons[0] != null) ? player.weapons[0] : 0;
+    return _DAMAGE_DEALING_WEAPONS.indexOf(primId) !== -1;
+}
+
+function _equipHat(id) {
+    if (!v || !v.alive || v.skinIndex === id) return;
+    if (id !== 0 && (!v.skins || !v.skins[id])) return;
+    v.skinIndex = id;
+    O.send("c", 0, id, 0);
+}
+
+function _equipAcc(id) {
+    if (!v || !v.alive || v.tailIndex === id) return;
+    if (id !== 0 && (!v.tails || !v.tails[id])) return;
+    v.tailIndex = id;
+    O.send("c", 0, id, 1);
+}
+
+function _oneTickHat(hatId) {
+    if (!v || !v.alive) return;
+    if (hatId !== 0 && (!v.skins || !v.skins[hatId])) return;
+    if (_hatOverrideTimer) clearTimeout(_hatOverrideTimer);
+    _equipHat(hatId);
+    _hatOverrideTimer = setTimeout(function() {
+        _hatOverrideTimer = null;
+        _updateBaseEquip();
+    }, 90);
+}
+
+function _oneTickAcc(accId) {
+    if (!v || !v.alive) return;
+    if (accId !== 0 && (!v.tails || !v.tails[accId])) return;
+    if (_accOverrideTimer) clearTimeout(_accOverrideTimer);
+    _equipAcc(accId);
+    _accOverrideTimer = setTimeout(function() {
+        _accOverrideTimer = null;
+        _updateBaseEquip();
+    }, 90);
+}
+
+function _getBaseHat() {
+    if (!v || !v.alive) return 0;
+
+    const spearRangeThreshold = 280; // Spear reach (142) + player scales (70) + buffer (68)
+
+    // Check if any enemy turret is in shooting range (700 units)
+    let turretInRange = false;
+    if (ge) {
+        for (let i = 0; i < ge.length; i++) {
+            const obj = ge[i];
+            if (!obj || !obj.active) continue;
+            const isTurret = obj.projectile === 1 || (obj.group && obj.group.id === 7) || obj.id === 17;
+            if (isTurret && obj.owner && obj.owner.sid !== v.sid && !(v.team && obj.owner.team && obj.owner.team === v.team)) {
+                if (M.getDistance(v.x, v.y, obj.x, obj.y) <= 700) {
+                    turretInRange = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Check if enemy player is within spear range
+    let enemyWithinSpear = false;
+    let enemyWithMeleeWithinSpear = false;
+    if (E) {
+        for (let i = 0; i < E.length; i++) {
+            const p = E[i];
+            if (!p || p === v || !p.alive || !p.visible) continue;
+            if (v.team && p.team && p.team === v.team) continue;
+            const dist = M.getDistance(v.x, v.y, p.x, p.y);
+            if (dist <= spearRangeThreshold) {
+                enemyWithinSpear = true;
+                if (_hasDamageDealingPrimary(p)) {
+                    enemyWithMeleeWithinSpear = true;
+                }
+            }
+        }
+    }
+
+    let targetHat = 12; // default Booster Hat
+    if (turretInRange) {
+        if (enemyWithMeleeWithinSpear) {
+            targetHat = 6; // Soldier Helmet when enemy with melee weapon is within spear range
+        } else {
+            targetHat = 22; // EMP Helmet when turret in range
+        }
+    } else {
+        if (enemyWithinSpear) {
+            targetHat = 6; // Soldier Helmet when enemy in spear range
+        } else {
+            targetHat = 12; // Booster Hat default
+        }
+    }
+
+    if (v.skins && v.skins[targetHat]) return targetHat;
+    if (v.skins && v.skins[12]) return 12;
+    return v.skinIndex || 0;
+}
+
+function _getBaseAcc() {
+    if (!v || !v.alive) return 0;
+    if (v.tails && v.tails[11]) return 11; // Monkey Tail default
+    return v.tailIndex || 0;
+}
+
+function _updateBaseEquip() {
+    if (!v || !v.alive) return;
+    if (!_hatOverrideTimer) {
+        const baseHat = _getBaseHat();
+        if (baseHat && v.skins && v.skins[baseHat] && v.skinIndex !== baseHat) {
+            _equipHat(baseHat);
+        }
+    }
+    if (!_accOverrideTimer) {
+        const baseAcc = _getBaseAcc();
+        if (baseAcc && v.tails && v.tails[baseAcc] && v.tailIndex !== baseAcc) {
+            _equipAcc(baseAcc);
+        }
+    }
+}
+
+function _onAttackTick(weaponIndex) {
+    if (!v || !v.alive) return;
+    const curWpnIdx = (weaponIndex != null) ? weaponIndex : ((v.weaponIndex != null) ? v.weaponIndex : 0);
+    const curWpnId = (v.weapons && v.weapons[curWpnIdx] != null) ? v.weapons[curWpnIdx] : 0;
+
+    // Right-click Hammer swing (weapon 10) -> 1-tick Tank Gear (40)
+    if (curWpnId === 10 || _rmbHammerActive) {
+        if (v.skins && v.skins[40]) {
+            _oneTickHat(40);
+        }
+        return;
+    }
+
+    // Primary weapon swing check (sword, katana, spear, daggers, axes)
+    if (_DAMAGE_DEALING_WEAPONS.indexOf(curWpnId) !== -1) {
+        // Switch to Shadow Wings (19) for 1 tick, restore Monkey Tail
+        if (v.tails && v.tails[19]) {
+            _oneTickAcc(19);
+        }
+
+        // If T key is held -> switch to Bull Helmet (7) for 1 tick, restore base hat
+        if (_tKeyHeld && v.skins && v.skins[7]) {
+            _oneTickHat(7);
+        }
+    }
+}
 window.showItemInfo = $;
 window.selectSkinColor = hl;
 window.changeStoreIndex = sl;
