@@ -3706,19 +3706,24 @@ function _hkRestorePrimary() {
  * Client-side place-validity check.
  *
  * Mirrors the server's checkItemLocation:
+ *   • item must belong to a group that has place:true
  *   • Map bounds (item-scale padding on all sides)
- *   • River band (skip for type-18 items — pads / bridges)
+ *   • River band rejection (applies to all standard items)
  *   • Overlap vs every active object in `ge`
  *       collision radius = item.scale + (obj.blocker ?? obj.scale)
  *
- * Returns true  → server should accept the placement.
- * Returns false → placement will fail; don't bother sending.
+ * NOTE: `place: !0` lives on the GROUP (B[n]), not on the item itself.
+ *       Access it via item.group.place, not item.place.
+ *
+ * Returns true  → placement should succeed server-side.
+ * Returns false → placement will fail; abort without sending any packets.
  */
 function _hkCanPlace(itemId) {
     if (!v || !v.alive) return false;
 
     const item = b && b.list && b.list[itemId];
-    if (!item || !item.place) return false;
+    // guard: item must exist and its group must be a placeable group
+    if (!item || !item.group || !item.group.place) return false;
 
     const angle  = Ci();
     const dist   = v.scale + item.scale + (item.placeOffset || 0);
@@ -3730,8 +3735,9 @@ function _hkCanPlace(itemId) {
     // ── map boundary ──
     if (px < isc || px > mapSc - isc || py < isc || py > mapSc - isc) return false;
 
-    // ── river band (type-18 items are allowed in river) ──
-    if (item.type !== 18) {
+    // ── river band — mirrors server: !P && I != 18 && y_in_river → reject
+    //    All standard groups have id < 14, so id 18 never occurs; check always active ──
+    {
         const rMid  = mapSc * 0.5;
         const rHalf = y.riverWidth * 0.5;
         if (py >= rMid - rHalf && py <= rMid + rHalf) return false;
@@ -3744,7 +3750,7 @@ function _hkCanPlace(itemId) {
         const osc = (obj.blocker != null) ? obj.blocker : obj.scale;
         const dx  = px - (obj.x + (obj.xWiggle || 0));
         const dy  = py - (obj.y + (obj.yWiggle || 0));
-        // avoid sqrt when we can: check squared distance
+        // squared-distance avoids sqrt on every object
         if (dx * dx + dy * dy < (isc + osc) * (isc + osc)) return false;
     }
 
@@ -3752,34 +3758,41 @@ function _hkCanPlace(itemId) {
 }
 
 /**
- * Atomic place sequence — the only place in the code that actually equips
- * an item and fires the place packets.  The whole sequence is sent in one
- * synchronous call so the server processes them in order; the client goes
- * back to primary before the next render frame.
+ * Atomic place sequence.
+ * restoreId = the weapon/item the player was holding before the hotkey fired.
+ * The whole burst is synchronous so the server processes in order and the
+ * client returns to the restore weapon before the next render frame.
  */
-function _hkDoPlace(itemId) {
+function _hkDoPlace(itemId, restoreId) {
     const angle = Ci();
-    O.send("z", itemId, false); // equip build item  (buildIndex → ≥0 for ≤1 tick)
+    O.send("z", itemId, false); // equip build item  (buildIndex → ≥0 for ≤1 server tick)
     O.send("F", 1, angle);     // place press
     O.send("F", 0, angle);     // place release
-    _hkRestorePrimary();        // back to primary   (buildIndex → -1 immediately)
+    if (v && v.alive) {
+        O.send("z", restoreId, true); // back to weapon  (buildIndex → -1)
+        if (U === 1) O.send("F", 1, Ci()); // resume attack if LMB/space was held
+    }
 }
 
 // ── public API called from keydown / keyup ────────────────────────────────────
 
 /**
  * Called on keydown for a hotkey.
- * Starts a hold-loop that polls until the position is placeable, then fires.
- * Because we never send "z item" until _hkDoPlace, the player's character
- * never visually holds the item or suffers the build-item speed penalty.
+ * Captures the player's current weapon IMMEDIATELY (before any swap), then
+ * starts a poll loop.  Because we never send "z item" until _hkDoPlace fires,
+ * the character never visually holds the build item and full move speed is kept.
  */
 function _hkHoldStart(keyCode, slotIndex) {
     if (_hkHeld[keyCode]) return; // already running for this key
 
+    // Snapshot whatever is currently in hand — this is what we restore to.
+    // v.weaponIndex is the active slot; v.weapons[slot] is its ID.
+    const restoreId = (v.weapons && v.weapons[v.weaponIndex != null ? v.weaponIndex : 0]) || 0;
+
     const intervalId = setInterval(function () {
         // Abort if the key was released or the player died
         if (!_hkHeld[keyCode] || !v || !v.alive) {
-            _hkHoldStop(keyCode, /*restorePrimary=*/false);
+            _hkHoldStop(keyCode, /*doRestore=*/false);
             return;
         }
 
@@ -3790,26 +3803,30 @@ function _hkHoldStart(keyCode, slotIndex) {
         }
 
         if (_hkCanPlace(itemId)) {
-            // Stop the loop first so the interval can't fire again mid-place
-            _hkHoldStop(keyCode, /*restorePrimary=*/false);
-            _hkDoPlace(itemId);
+            // Clear loop before sending packets so interval can't double-fire
+            _hkHoldStop(keyCode, /*doRestore=*/false);
+            _hkDoPlace(itemId, restoreId);
         }
-        // else: position not yet valid — keep waiting, no packets sent
-    }, 16); // ~60 fps polling
+        // else: not yet valid — keep polling, no packets sent at all
+    }, 16); // ~60 fps
 
-    _hkHeld[keyCode] = { slotIndex, intervalId };
+    _hkHeld[keyCode] = { slotIndex, intervalId, restoreId };
 }
 
 /**
- * Called on keyup for a hotkey.
- * Cancels any pending hold-loop for this key and ensures primary is restored.
+ * Called on keyup for a hotkey (or internally when aborting).
+ * doRestore=true  → send restore packet (key released before placement).
+ * doRestore=false → placement already handled restore, or player dead.
  */
-function _hkHoldStop(keyCode, restorePrimary) {
+function _hkHoldStop(keyCode, doRestore) {
     const state = _hkHeld[keyCode];
     if (!state) return;
     clearInterval(state.intervalId);
     delete _hkHeld[keyCode];
-    if (restorePrimary !== false) _hkRestorePrimary();
+    if (doRestore !== false && v && v.alive) {
+        O.send("z", state.restoreId, true);
+        if (U === 1) O.send("F", 1, Ci());
+    }
 }
 
 function Ct() {
