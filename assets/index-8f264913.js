@@ -3631,7 +3631,14 @@ function pl(e) {
 window.addEventListener("keyup", M.checkTrusted(pl));
 
 function ke() {
-    v && v.alive && O.send("F", U, v.buildIndex >= 0 ? Ci() : null)
+    if (v && v.alive) {
+        O.send("F", U, v.buildIndex >= 0 ? Ci() : null);
+        if (U === 1 && v.buildIndex < 0) {
+            if (Date.now() >= _nextAttackTime) {
+                _triggerAttackSwing();
+            }
+        }
+    }
 }
 let Kt;
 
@@ -4614,7 +4621,7 @@ window.requestAnimFrame = function() {
 }();
 
 function as() {
-    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), _updateBaseEquip(), requestAnimFrame(as)
+    He = Date.now(), K = He - Xi, Xi = He, bi(), Cl(), _checkAttackLoop(), _updateBaseEquip(), requestAnimFrame(as)
 }
 Hl();
 as();
@@ -4674,6 +4681,7 @@ const _DAMAGE_DEALING_WEAPONS = [1, 2, 3, 4, 5, 7]; // Hand Axe, Great Axe, Shor
 let _tKeyHeld = false;
 let _hatOverrideTimer = null;
 let _accOverrideTimer = null;
+let _nextAttackTime = 0;
 
 function _hasDamageDealingPrimary(player) {
     if (!player) return false;
@@ -4683,38 +4691,34 @@ function _hasDamageDealingPrimary(player) {
 
 function _equipHat(id) {
     if (!v || !v.alive || v.skinIndex === id) return;
-    if (id !== 0 && (!v.skins || !v.skins[id])) return;
     v.skinIndex = id;
     O.send("c", 0, id, 0);
 }
 
 function _equipAcc(id) {
     if (!v || !v.alive || v.tailIndex === id) return;
-    if (id !== 0 && (!v.tails || !v.tails[id])) return;
     v.tailIndex = id;
     O.send("c", 0, id, 1);
 }
 
 function _oneTickHat(hatId) {
     if (!v || !v.alive) return;
-    if (hatId !== 0 && (!v.skins || !v.skins[hatId])) return;
     if (_hatOverrideTimer) clearTimeout(_hatOverrideTimer);
     _equipHat(hatId);
     _hatOverrideTimer = setTimeout(function() {
         _hatOverrideTimer = null;
         _updateBaseEquip();
-    }, 90);
+    }, 110);
 }
 
 function _oneTickAcc(accId) {
     if (!v || !v.alive) return;
-    if (accId !== 0 && (!v.tails || !v.tails[accId])) return;
     if (_accOverrideTimer) clearTimeout(_accOverrideTimer);
     _equipAcc(accId);
     _accOverrideTimer = setTimeout(function() {
         _accOverrideTimer = null;
         _updateBaseEquip();
-    }, 90);
+    }, 110);
 }
 
 function _getBaseHat() {
@@ -4771,29 +4775,49 @@ function _getBaseHat() {
         }
     }
 
-    if (v.skins && v.skins[targetHat]) return targetHat;
-    if (v.skins && v.skins[12]) return 12;
-    return v.skinIndex || 0;
+    return targetHat;
 }
 
 function _getBaseAcc() {
     if (!v || !v.alive) return 0;
-    if (v.tails && v.tails[11]) return 11; // Monkey Tail default
-    return v.tailIndex || 0;
+    return 11; // Monkey Tail default
 }
 
 function _updateBaseEquip() {
     if (!v || !v.alive) return;
     if (!_hatOverrideTimer) {
         const baseHat = _getBaseHat();
-        if (baseHat && v.skins && v.skins[baseHat] && v.skinIndex !== baseHat) {
+        if (baseHat && v.skinIndex !== baseHat) {
             _equipHat(baseHat);
         }
     }
     if (!_accOverrideTimer) {
         const baseAcc = _getBaseAcc();
-        if (baseAcc && v.tails && v.tails[baseAcc] && v.tailIndex !== baseAcc) {
+        if (baseAcc && v.tailIndex !== baseAcc) {
             _equipAcc(baseAcc);
+        }
+    }
+}
+
+function _triggerAttackSwing() {
+    if (!v || !v.alive || v.buildIndex >= 0) return;
+    const curWpnIdx = (v.weaponIndex != null) ? v.weaponIndex : 0;
+    const curWpn = b.weapons[curWpnIdx];
+    const wpnSpeed = (curWpn && curWpn.speed) ? curWpn.speed : 300;
+    const atkSpdMult = (v.skin && v.skin.atkSpd) ? v.skin.atkSpd : 1;
+    const cooldown = wpnSpeed * atkSpdMult;
+
+    _nextAttackTime = Date.now() + cooldown;
+    _onAttackTick(curWpnIdx);
+}
+
+function _checkAttackLoop() {
+    if (!v || !v.alive || v.buildIndex >= 0) return;
+    const isAttacking = (U === 1 || v.autoGather === 1);
+    if (isAttacking) {
+        const now = Date.now();
+        if (now >= _nextAttackTime) {
+            _triggerAttackSwing();
         }
     }
 }
@@ -4805,21 +4829,17 @@ function _onAttackTick(weaponIndex) {
 
     // Right-click Hammer swing (weapon 10) -> 1-tick Tank Gear (40)
     if (curWpnId === 10 || _rmbHammerActive) {
-        if (v.skins && v.skins[40]) {
-            _oneTickHat(40);
-        }
+        _oneTickHat(40);
         return;
     }
 
     // Primary weapon swing check (sword, katana, spear, daggers, axes)
     if (_DAMAGE_DEALING_WEAPONS.indexOf(curWpnId) !== -1) {
         // Switch to Shadow Wings (19) for 1 tick, restore Monkey Tail
-        if (v.tails && v.tails[19]) {
-            _oneTickAcc(19);
-        }
+        _oneTickAcc(19);
 
         // If T key is held -> switch to Bull Helmet (7) for 1 tick, restore base hat
-        if (_tKeyHeld && v.skins && v.skins[7]) {
+        if (_tKeyHeld) {
             _oneTickHat(7);
         }
     }
