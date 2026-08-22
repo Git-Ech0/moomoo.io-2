@@ -3279,7 +3279,14 @@ function hi() {
 }
 
 function al(e, t, i) {
-    i ? e ? v.tailIndex = t : v.tails[t] = 1 : e ? v.skinIndex = t : v.skins[t] = 1, ce.style.display == "block" && Ii()
+    if (v) {
+        if (i) {
+            e ? (v.tailIndex = t, v.tails && (v.tails[t] = 1)) : (v.tails && (v.tails[t] = 1));
+        } else {
+            e ? (v.skinIndex = t, v.skins && (v.skins[t] = 1)) : (v.skins && (v.skins[t] = 1));
+        }
+    }
+    ce.style.display == "block" && Ii()
 }
 
 function Ii() {
@@ -3529,11 +3536,12 @@ if (!Dn) {
             if (n.button === 2) {
                 n.preventDefault();
                 n.stopPropagation();
-                if (v && v.alive && v.weapons && v.weapons[1] === 10) {
+                if (v && v.alive && v.weapons && v.weapons.length > 0) {
+                    const breakWpn = _getBestBreakingWeapon();
                     const curWpn = b.weapons[v.weaponIndex];
                     _rmbRestoreId = curWpn ? curWpn.id : v.weapons[0];
                     _rmbHammerActive = true;
-                    O.send("z", 10, true);
+                    O.send("z", breakWpn, true);
                     U = 1;
                     ke();
                 }
@@ -3747,11 +3755,15 @@ function _hkDoPlace(slotIndex) {
     const itemId = _getItemForSlot(slotIndex);
     if (itemId == null) return;
 
-    // Snapshot current active weapon (primary or secondary)
-    const curWpnIdx = (v.weaponIndex != null) ? v.weaponIndex : 0;
-    const restoreId = (v.weapons && v.weapons[curWpnIdx] != null)
-        ? v.weapons[curWpnIdx]
-        : ((v.weapons && v.weapons[0]) || 0);
+    let restoreId;
+    if (_rmbHammerActive) {
+        restoreId = _getBestBreakingWeapon();
+    } else {
+        const curWpnIdx = (v.weaponIndex != null) ? v.weaponIndex : 0;
+        restoreId = (v.weapons && v.weapons[curWpnIdx] != null)
+            ? v.weapons[curWpnIdx]
+            : ((v.weapons && v.weapons[0]) || 0);
+    }
     const angle = Ci();
 
     // Atomic equip -> place -> restore sequence
@@ -3760,7 +3772,7 @@ function _hkDoPlace(slotIndex) {
     O.send("F", 0, angle);
     O.send("z", restoreId, true);
 
-    // Resume attack if Left Mouse Button or Spacebar is held
+    // Resume attack if Left Mouse Button or Spacebar or RMB is held
     if (U === 1) {
         O.send("F", 1, Ci());
     }
@@ -4707,6 +4719,26 @@ let _nextAttackTime = 0;
 let _lastEquippedHat = -1;
 let _lastEquippedAcc = -1;
 
+function _getBestBreakingWeapon() {
+    if (!v || !v.weapons || v.weapons.length === 0) return 0;
+    let bestWpn = v.weapons[0];
+    let bestDmgRate = -1;
+    for (let i = 0; i < v.weapons.length; i++) {
+        const wId = v.weapons[i];
+        const w = b && b.weapons && b.weapons[wId];
+        if (!w) continue;
+        const dmg = (w.dmg || 1);
+        const sDmg = (w.sDmg || 1);
+        const spd = (w.speed || 300) / 1000;
+        const rate = (dmg * sDmg) / spd;
+        if (rate > bestDmgRate) {
+            bestDmgRate = rate;
+            bestWpn = wId;
+        }
+    }
+    return bestWpn;
+}
+
 function _hasDamageDealingPrimary(player) {
     if (!player) return false;
     const primId = (player.weapons && player.weapons[0] != null) ? player.weapons[0] : 0;
@@ -4716,27 +4748,27 @@ function _hasDamageDealingPrimary(player) {
 function _isOwnedHat(id) {
     if (id === 0) return true;
     if (!v) return false;
-    return Boolean((v.skins && v.skins[id]) || y.inSandbox);
+    return Boolean((v.skins && v.skins[id]) || (v.skinIndex === id) || y.inSandbox);
 }
 
 function _isOwnedAcc(id) {
     if (id === 0) return true;
     if (!v) return false;
-    return Boolean((v.tails && v.tails[id]) || y.inSandbox);
+    return Boolean((v.tails && v.tails[id]) || (v.tailIndex === id) || y.inSandbox);
 }
 
-function _equipHat(id) {
+function _equipHat(id, force) {
     if (!v || !v.alive) return;
-    if (!_isOwnedHat(id)) return;
+    if (!force && !_isOwnedHat(id)) return;
     if (v.skinIndex === id && _lastEquippedHat === id) return;
     v.skinIndex = id;
     _lastEquippedHat = id;
     O.send("c", 0, id, 0);
 }
 
-function _equipAcc(id) {
+function _equipAcc(id, force) {
     if (!v || !v.alive) return;
-    if (!_isOwnedAcc(id)) return;
+    if (!force && !_isOwnedAcc(id)) return;
     if (v.tailIndex === id && _lastEquippedAcc === id) return;
     v.tailIndex = id;
     _lastEquippedAcc = id;
@@ -4745,24 +4777,22 @@ function _equipAcc(id) {
 
 function _oneTickHat(hatId) {
     if (!v || !v.alive) return;
-    if (!_isOwnedHat(hatId)) return;
     if (_hatOverrideTimer) clearTimeout(_hatOverrideTimer);
-    _equipHat(hatId);
+    _equipHat(hatId, true);
     _hatOverrideTimer = setTimeout(function() {
         _hatOverrideTimer = null;
         _updateBaseEquip();
-    }, 130);
+    }, 150);
 }
 
 function _oneTickAcc(accId) {
     if (!v || !v.alive) return;
-    if (!_isOwnedAcc(accId)) return;
     if (_accOverrideTimer) clearTimeout(_accOverrideTimer);
-    _equipAcc(accId);
+    _equipAcc(accId, true);
     _accOverrideTimer = setTimeout(function() {
         _accOverrideTimer = null;
         _updateBaseEquip();
-    }, 130);
+    }, 150);
 }
 
 function _getBaseHat() {
@@ -4836,13 +4866,13 @@ function _updateBaseEquip() {
     if (!_hatOverrideTimer) {
         const baseHat = _getBaseHat();
         if (_isOwnedHat(baseHat) && (v.skinIndex !== baseHat || _lastEquippedHat !== baseHat)) {
-            _equipHat(baseHat);
+            _equipHat(baseHat, false);
         }
     }
     if (!_accOverrideTimer) {
         const baseAcc = _getBaseAcc();
         if (_isOwnedAcc(baseAcc) && (v.tailIndex !== baseAcc || _lastEquippedAcc !== baseAcc)) {
-            _equipAcc(baseAcc);
+            _equipAcc(baseAcc, false);
         }
     }
 }
@@ -4875,23 +4905,19 @@ function _onAttackTick(weaponIndex) {
     const curWpnIdx = (weaponIndex != null) ? weaponIndex : ((v.weaponIndex != null) ? v.weaponIndex : 0);
     const curWpnId = (v.weapons && v.weapons[curWpnIdx] != null) ? v.weapons[curWpnIdx] : 0;
 
-    // Right-click Hammer swing (weapon 10) -> 1-tick Tank Gear (40)
-    if (curWpnId === 10 || _rmbHammerActive) {
-        if (_isOwnedHat(40)) {
-            _oneTickHat(40);
-        }
+    // 1. Right-click breaking weapon / hammer swing -> 1-tick Tank Gear (40)
+    if (_rmbHammerActive || curWpnId === 10) {
+        _oneTickHat(40);
         return;
     }
 
-    // Primary weapon swing check (sword, katana, spear, daggers, axes)
+    // 2. Primary weapon swing check (sword, katana, spear, daggers, axes)
     if (_DAMAGE_DEALING_WEAPONS.indexOf(curWpnId) !== -1) {
         // Switch to Shadow Wings (19) for 1 tick, restore Monkey Tail
-        if (_isOwnedAcc(19)) {
-            _oneTickAcc(19);
-        }
+        _oneTickAcc(19);
 
         // If T key is held -> switch to Bull Helmet (7) for 1 tick, restore base hat
-        if (_tKeyHeld && _isOwnedHat(7)) {
+        if (_tKeyHeld) {
             _oneTickHat(7);
         }
     }
