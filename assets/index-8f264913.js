@@ -2865,33 +2865,22 @@ window.addEventListener("keydown", function(e) {
 Be.oncontextmenu = function() {
     return !1
 };
+window.oncontextmenu = function(e) {
+    e.preventDefault();
+    return false;
+};
 
-// ── RIGHT-CLICK: switch to hammer while RMB is held, restore on release ──
-// "hammer" = great hammer, weapon id 10, type 1 (secondary slot).
-// Only activates if the player's secondary weapon is the hammer (v.weapons[1] === 10).
 let _rmbHammerActive = false;
 let _rmbRestoreId    = null;
 
-Be.addEventListener("mousedown", function _rmbDown(e) {
-    if (e.button !== 2 || !v || !v.alive) return;
-    e.preventDefault();
-    // Check that hammer is equipped as secondary
-    if (v.weapons && v.weapons[1] === 10) {
-        // Save whichever weapon/tool is currently in hand
-        const curWpn = b.weapons[v.weaponIndex];
-        _rmbRestoreId    = curWpn ? curWpn.id : v.weapons[0];
-        _rmbHammerActive = true;
-        O.send("z", 10, true); // switch to hammer
-    }
-});
-
-// Listen on document so we catch mouseup even when cursor drifts off the canvas
-document.addEventListener("mouseup", function _rmbUp(e) {
-    if (e.button !== 2 || !_rmbHammerActive) return;
-    _rmbHammerActive = false;
-    if (_rmbRestoreId !== null && v && v.alive) {
-        O.send("z", _rmbRestoreId, true); // restore previous weapon
-        _rmbRestoreId = null;
+document.addEventListener("mouseup", function _rmbGlobalUp(e) {
+    if (e.button === 2 && _rmbHammerActive) {
+        _rmbHammerActive = false;
+        if (U === 1) { U = 0; ke(); }
+        if (_rmbRestoreId !== null && v && v.alive) {
+            O.send("z", _rmbRestoreId, true);
+            _rmbRestoreId = null;
+        }
     }
 });
 ["touch-controls-left", "touch-controls-right", "touch-controls-fullscreen", "storeMenu"].forEach(e => {
@@ -3536,10 +3525,43 @@ if (!Dn) {
             n.preventDefault(), n.stopPropagation(), ye(!1), On = n.clientX, Hn = n.clientY
         },
         i = function(n) {
-            ye(!1), U != 1 && (U = 1, ke())
+            ye(!1);
+            if (n.button === 2) {
+                n.preventDefault();
+                n.stopPropagation();
+                if (v && v.alive && v.weapons && v.weapons[1] === 10) {
+                    const curWpn = b.weapons[v.weaponIndex];
+                    _rmbRestoreId = curWpn ? curWpn.id : v.weapons[0];
+                    _rmbHammerActive = true;
+                    O.send("z", 10, true);
+                    U = 1;
+                    ke();
+                }
+                return;
+            }
+            if (n.button === 0) {
+                U != 1 && (U = 1, ke());
+            }
         },
         s = function(n) {
-            ye(!1), U != 0 && (U = 0, ke())
+            ye(!1);
+            if (n.button === 2) {
+                n.preventDefault();
+                n.stopPropagation();
+                if (_rmbHammerActive) {
+                    _rmbHammerActive = false;
+                    U = 0;
+                    ke();
+                    if (_rmbRestoreId !== null && v && v.alive) {
+                        O.send("z", _rmbRestoreId, true);
+                        _rmbRestoreId = null;
+                    }
+                }
+                return;
+            }
+            if (n.button === 0) {
+                U != 0 && (U = 0, ke());
+            }
         };
     const e = document.getElementById("touch-controls-fullscreen");
     e.style.display = "block", e.addEventListener("mousemove", t, !1), e.addEventListener("mousedown", i, !1), e.addEventListener("mouseup", s, !1)
@@ -4682,6 +4704,8 @@ let _tKeyHeld = false;
 let _hatOverrideTimer = null;
 let _accOverrideTimer = null;
 let _nextAttackTime = 0;
+let _lastEquippedHat = -1;
+let _lastEquippedAcc = -1;
 
 function _hasDamageDealingPrimary(player) {
     if (!player) return false;
@@ -4689,36 +4713,56 @@ function _hasDamageDealingPrimary(player) {
     return _DAMAGE_DEALING_WEAPONS.indexOf(primId) !== -1;
 }
 
+function _isOwnedHat(id) {
+    if (id === 0) return true;
+    if (!v) return false;
+    return Boolean((v.skins && v.skins[id]) || y.inSandbox);
+}
+
+function _isOwnedAcc(id) {
+    if (id === 0) return true;
+    if (!v) return false;
+    return Boolean((v.tails && v.tails[id]) || y.inSandbox);
+}
+
 function _equipHat(id) {
-    if (!v || !v.alive || v.skinIndex === id) return;
+    if (!v || !v.alive) return;
+    if (!_isOwnedHat(id)) return;
+    if (v.skinIndex === id && _lastEquippedHat === id) return;
     v.skinIndex = id;
+    _lastEquippedHat = id;
     O.send("c", 0, id, 0);
 }
 
 function _equipAcc(id) {
-    if (!v || !v.alive || v.tailIndex === id) return;
+    if (!v || !v.alive) return;
+    if (!_isOwnedAcc(id)) return;
+    if (v.tailIndex === id && _lastEquippedAcc === id) return;
     v.tailIndex = id;
+    _lastEquippedAcc = id;
     O.send("c", 0, id, 1);
 }
 
 function _oneTickHat(hatId) {
     if (!v || !v.alive) return;
+    if (!_isOwnedHat(hatId)) return;
     if (_hatOverrideTimer) clearTimeout(_hatOverrideTimer);
     _equipHat(hatId);
     _hatOverrideTimer = setTimeout(function() {
         _hatOverrideTimer = null;
         _updateBaseEquip();
-    }, 110);
+    }, 130);
 }
 
 function _oneTickAcc(accId) {
     if (!v || !v.alive) return;
+    if (!_isOwnedAcc(accId)) return;
     if (_accOverrideTimer) clearTimeout(_accOverrideTimer);
     _equipAcc(accId);
     _accOverrideTimer = setTimeout(function() {
         _accOverrideTimer = null;
         _updateBaseEquip();
-    }, 110);
+    }, 130);
 }
 
 function _getBaseHat() {
@@ -4775,25 +4819,29 @@ function _getBaseHat() {
         }
     }
 
-    return targetHat;
+    if (_isOwnedHat(targetHat)) return targetHat;
+    if (_isOwnedHat(12)) return 12;
+    if (_isOwnedHat(6)) return 6;
+    return 0;
 }
 
 function _getBaseAcc() {
     if (!v || !v.alive) return 0;
-    return 11; // Monkey Tail default
+    if (_isOwnedAcc(11)) return 11; // Monkey Tail default if owned
+    return 0;
 }
 
 function _updateBaseEquip() {
     if (!v || !v.alive) return;
     if (!_hatOverrideTimer) {
         const baseHat = _getBaseHat();
-        if (baseHat && v.skinIndex !== baseHat) {
+        if (_isOwnedHat(baseHat) && (v.skinIndex !== baseHat || _lastEquippedHat !== baseHat)) {
             _equipHat(baseHat);
         }
     }
     if (!_accOverrideTimer) {
         const baseAcc = _getBaseAcc();
-        if (baseAcc && v.tailIndex !== baseAcc) {
+        if (_isOwnedAcc(baseAcc) && (v.tailIndex !== baseAcc || _lastEquippedAcc !== baseAcc)) {
             _equipAcc(baseAcc);
         }
     }
@@ -4813,7 +4861,7 @@ function _triggerAttackSwing() {
 
 function _checkAttackLoop() {
     if (!v || !v.alive || v.buildIndex >= 0) return;
-    const isAttacking = (U === 1 || v.autoGather === 1);
+    const isAttacking = (U === 1 || v.autoGather === 1 || _rmbHammerActive);
     if (isAttacking) {
         const now = Date.now();
         if (now >= _nextAttackTime) {
@@ -4829,17 +4877,21 @@ function _onAttackTick(weaponIndex) {
 
     // Right-click Hammer swing (weapon 10) -> 1-tick Tank Gear (40)
     if (curWpnId === 10 || _rmbHammerActive) {
-        _oneTickHat(40);
+        if (_isOwnedHat(40)) {
+            _oneTickHat(40);
+        }
         return;
     }
 
     // Primary weapon swing check (sword, katana, spear, daggers, axes)
     if (_DAMAGE_DEALING_WEAPONS.indexOf(curWpnId) !== -1) {
         // Switch to Shadow Wings (19) for 1 tick, restore Monkey Tail
-        _oneTickAcc(19);
+        if (_isOwnedAcc(19)) {
+            _oneTickAcc(19);
+        }
 
         // If T key is held -> switch to Bull Helmet (7) for 1 tick, restore base hat
-        if (_tKeyHeld) {
+        if (_tKeyHeld && _isOwnedHat(7)) {
             _oneTickHat(7);
         }
     }
