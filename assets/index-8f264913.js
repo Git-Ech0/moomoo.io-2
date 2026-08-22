@@ -2848,6 +2848,7 @@ let xi = !0;
 var vi = !1;
 (!pi || We) && (vi = !0);
 window.onblur = function() {
+    for (const k in _hkHeld) { _hkHoldStop(k); }
     xi = !1
 };
 window.onfocus = function() {
@@ -3577,11 +3578,12 @@ var ne = {},
     };
 
 function Pi() {
+    for (const k in _hkHeld) { _hkHoldStop(k); }
     ne = {}, O.send("e")
 }
 
 function Jn() {
-    return J.style.display != "block" && Mt.style.display != "block"
+    return J.style.display != "block" && Mt.style.display != "block" && ce.style.display != "block"
 }
 
 function ml(e) {
@@ -3590,10 +3592,7 @@ function ml(e) {
     if (!v || !v.alive || !Jn() || ne[t]) return;
     ne[t] = 1;
 
-    // ── Hotkey place: tap or hold (see _HK_SLOT / _hkHoldStart) ──
-    // Z → items[3] | F → items[4] | R → items[2] | G → items[5]
-    // Holding the key polls client-side until the spot is valid, then places
-    // atomically.  Character never visually holds the item while waiting.
+    // ── Hotkey place: instant 0ms trigger + hold-to-repeat ──
     if (_HK_SLOT[t] !== undefined) { _hkHoldStart(t, _HK_SLOT[t]); return; }
 
     // ── Original key handling ──
@@ -3615,15 +3614,9 @@ function pl(e) {
             if (J.style.display === "block") return;
             Yn()
         } else {
-            // ── Stop any pending hotkey-place hold loop for this key ──
-            // _hkHoldStop is a no-op if no loop is running for `t`, so safe
-            // to call unconditionally before the rest of keyup handling.
+            // ── Stop hold loop on key release ──
             if (_HK_SLOT[t] !== undefined) {
-                // restorePrimary=true: if the hold timed out without placing,
-                // make sure we're back on primary weapon (safety net — normally
-                // the loop never equips the item so primary was never left, but
-                // belt-and-suspenders here costs nothing).
-                _hkHoldStop(t, true);
+                _hkHoldStop(t);
             }
             Jn() && ne[t] && (ne[t] = 0, bt[t] ? Tt() : t == 32 && (U = 0, ke()))
         }
@@ -3658,175 +3651,79 @@ function je(e, t) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HOTKEY PLACE SYSTEM v3
+// HOTKEY PLACE SYSTEM (Instant 0ms Activation + Fast Repeat on Hold)
 //
-// • TAP  (press + release quickly)
-//     → Client-side placeability check FIRST, no packets sent until we're sure.
-//     → If valid:   equip item → place press → place release → restore primary.
-//     → If invalid: restore primary immediately. Character never visually holds
-//                   the item even for one frame.
-//
-// • HOLD (key held down)
-//     → Polls at ~60 fps checking client-side placeability.
-//     → Player stays on primary weapon the ENTIRE time (full move speed, no
-//       visual item in hand).
-//     → The instant the position becomes valid: atomic equip→place→restore.
-//     → Releasing the key aborts the wait and stays on primary.
-//
-// PLACEABILITY CHECK (client mirrors server checkItemLocation):
-//     • Map boundary check (item.scale padding)
-//     • River band check    (skipped for type-18 items)
-//     • Collision vs every active object in `ge` using obj.blocker ?? obj.scale
+// Key mappings:
+//   V (86) → items[1] (Walls)
+//   R (82) → items[2] (Spikes)
+//   Z (90) → items[3] (Windmill)
+//   N (78) → items[3] (Windmill alt)
+//   F (70) → items[4] (Traps / Boosters)
+//   G (71) → items[5] (Turrets / Special)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const _HK_SLOT = {
-    90: 3, // Z → items[3]
-    70: 4, // F → items[4]
-    82: 2, // R → items[2]
-    71: 5, // G → items[5]
+    86: 1, // V → items[1] (Walls)
+    82: 2, // R → items[2] (Spikes)
+    90: 3, // Z → items[3] (Windmill)
+    78: 3, // N → items[3] (Windmill alt)
+    70: 4, // F → items[4] (Traps / Boosters)
+    71: 5, // G → items[5] (Turrets / Special)
 };
 
 // { keyCode: { slotIndex: number, intervalId: number } }
 const _hkHeld = {};
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function _hkPrimaryId() {
-    return (v && v.weapons && v.weapons[0] != null) ? v.weapons[0] : 0;
-}
-
-function _hkRestorePrimary() {
+function _hkDoPlace(slotIndex) {
     if (!v || !v.alive) return;
-    O.send("z", _hkPrimaryId(), true);
-    // Resume attack packet if LMB/space was held when we borrowed the slot
-    if (U === 1) O.send("F", 1, Ci());
-}
-
-/**
- * Client-side place-validity check.
- *
- * Mirrors the server's checkItemLocation:
- *   • item must belong to a group that has place:true
- *   • Map bounds (item-scale padding on all sides)
- *   • River band rejection (applies to all standard items)
- *   • Overlap vs every active object in `ge`
- *       collision radius = item.scale + (obj.blocker ?? obj.scale)
- *
- * NOTE: `place: !0` lives on the GROUP (B[n]), not on the item itself.
- *       Access it via item.group.place, not item.place.
- *
- * Returns true  → placement should succeed server-side.
- * Returns false → placement will fail; abort without sending any packets.
- */
-function _hkCanPlace(itemId) {
-    if (!v || !v.alive) return false;
+    const itemId = v.items && v.items[slotIndex];
+    if (itemId == null) return;
 
     const item = b && b.list && b.list[itemId];
-    // guard: item must exist and its group must be a placeable group
-    if (!item || !item.group || !item.group.place) return false;
+    if (item && !v.canBuild(item)) return;
 
-    const angle  = Ci();
-    const dist   = v.scale + item.scale + (item.placeOffset || 0);
-    const px     = v.x + dist * Math.cos(angle);
-    const py     = v.y + dist * Math.sin(angle);
-    const mapSc  = y.mapScale;
-    const isc    = item.scale;
-
-    // ── map boundary ──
-    if (px < isc || px > mapSc - isc || py < isc || py > mapSc - isc) return false;
-
-    // ── river band — mirrors server: !P && I != 18 && y_in_river → reject
-    //    All standard groups have id < 14, so id 18 never occurs; check always active ──
-    {
-        const rMid  = mapSc * 0.5;
-        const rHalf = y.riverWidth * 0.5;
-        if (py >= rMid - rHalf && py <= rMid + rHalf) return false;
-    }
-
-    // ── collision vs existing world / placed objects ──
-    for (let i = 0; i < ge.length; i++) {
-        const obj = ge[i];
-        if (!obj.active) continue;
-        const osc = (obj.blocker != null) ? obj.blocker : obj.scale;
-        const dx  = px - (obj.x + (obj.xWiggle || 0));
-        const dy  = py - (obj.y + (obj.yWiggle || 0));
-        // squared-distance avoids sqrt on every object
-        if (dx * dx + dy * dy < (isc + osc) * (isc + osc)) return false;
-    }
-
-    return true;
-}
-
-/**
- * Atomic place sequence.
- * restoreId = the weapon/item the player was holding before the hotkey fired.
- * The whole burst is synchronous so the server processes in order and the
- * client returns to the restore weapon before the next render frame.
- */
-function _hkDoPlace(itemId, restoreId) {
+    // Snapshot current active weapon (primary or secondary)
+    const curWpnIdx = (v.weaponIndex != null) ? v.weaponIndex : 0;
+    const restoreId = (v.weapons && v.weapons[curWpnIdx] != null)
+        ? v.weapons[curWpnIdx]
+        : ((v.weapons && v.weapons[0]) || 0);
     const angle = Ci();
-    O.send("z", itemId, false); // equip build item  (buildIndex → ≥0 for ≤1 server tick)
-    O.send("F", 1, angle);     // place press
-    O.send("F", 0, angle);     // place release
-    if (v && v.alive) {
-        O.send("z", restoreId, true); // back to weapon  (buildIndex → -1)
-        if (U === 1) O.send("F", 1, Ci()); // resume attack if LMB/space was held
+
+    // Atomic equip -> place -> restore sequence
+    O.send("z", itemId, false);
+    O.send("F", 1, angle);
+    O.send("F", 0, angle);
+    O.send("z", restoreId, true);
+
+    // Resume attack if Left Mouse Button or Spacebar is held
+    if (U === 1) {
+        O.send("F", 1, Ci());
     }
 }
 
-// ── public API called from keydown / keyup ────────────────────────────────────
-
-/**
- * Called on keydown for a hotkey.
- * Captures the player's current weapon IMMEDIATELY (before any swap), then
- * starts a poll loop.  Because we never send "z item" until _hkDoPlace fires,
- * the character never visually holds the build item and full move speed is kept.
- */
 function _hkHoldStart(keyCode, slotIndex) {
-    if (_hkHeld[keyCode]) return; // already running for this key
+    if (_hkHeld[keyCode]) return;
 
-    // Snapshot whatever is currently in hand — this is what we restore to.
-    // v.weaponIndex is the active slot; v.weapons[slot] is its ID.
-    const restoreId = (v.weapons && v.weapons[v.weaponIndex != null ? v.weaponIndex : 0]) || 0;
+    // 1. Instant placement on keydown (0ms delay)
+    _hkDoPlace(slotIndex);
 
+    // 2. Fast repeat loop while held down (~25 times per sec)
     const intervalId = setInterval(function () {
-        // Abort if the key was released or the player died
-        if (!_hkHeld[keyCode] || !v || !v.alive) {
-            _hkHoldStop(keyCode, /*doRestore=*/false);
+        if (!_hkHeld[keyCode] || !v || !v.alive || !Jn()) {
+            _hkHoldStop(keyCode);
             return;
         }
+        _hkDoPlace(slotIndex);
+    }, 40);
 
-        const itemId = v.items && v.items[slotIndex];
-        if (itemId == null) {
-            _hkHoldStop(keyCode, false);
-            return;
-        }
-
-        if (_hkCanPlace(itemId)) {
-            // Clear loop before sending packets so interval can't double-fire
-            _hkHoldStop(keyCode, /*doRestore=*/false);
-            _hkDoPlace(itemId, restoreId);
-        }
-        // else: not yet valid — keep polling, no packets sent at all
-    }, 16); // ~60 fps
-
-    _hkHeld[keyCode] = { slotIndex, intervalId, restoreId };
+    _hkHeld[keyCode] = { slotIndex: slotIndex, intervalId: intervalId };
 }
 
-/**
- * Called on keyup for a hotkey (or internally when aborting).
- * doRestore=true  → send restore packet (key released before placement).
- * doRestore=false → placement already handled restore, or player dead.
- */
-function _hkHoldStop(keyCode, doRestore) {
+function _hkHoldStop(keyCode) {
     const state = _hkHeld[keyCode];
     if (!state) return;
     clearInterval(state.intervalId);
     delete _hkHeld[keyCode];
-    if (doRestore !== false && v && v.alive) {
-        O.send("z", state.restoreId, true);
-        if (U === 1) O.send("F", 1, Ci());
-    }
 }
 
 function Ct() {
@@ -3880,6 +3777,7 @@ function vl(e, t, i, s) {
 let yt = 99999;
 
 function Sl() {
+    for (const k in _hkHeld) { _hkHoldStop(k); }
     et = !1, kl();
     if (v) v.alive = false;
     
