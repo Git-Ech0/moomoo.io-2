@@ -3583,7 +3583,7 @@ function Pi() {
 }
 
 function Jn() {
-    return J.style.display != "block" && Mt.style.display != "block" && ce.style.display != "block"
+    return J.style.display != "block" && Mt.style.display != "block"
 }
 
 function ml(e) {
@@ -3674,13 +3674,43 @@ const _HK_SLOT = {
 // { keyCode: { slotIndex: number, intervalId: number } }
 const _hkHeld = {};
 
+function _getItemForSlot(slotIndex) {
+    if (!v) return null;
+    if (v.items && v.items[slotIndex] != null) {
+        return v.items[slotIndex];
+    }
+    const targetGroups = {
+        1: [1],                      // Walls
+        2: [2],                      // Spikes
+        3: [3],                      // Mills
+        4: [5, 6, 4, 11],           // Traps, Boosters, Mines, Saplings
+        5: [7, 9, 8, 12, 13, 10]    // Turrets, Healing, Platforms, Blockers, Teleporters, Spawn
+    }[slotIndex];
+
+    if (targetGroups && v.items && b && b.list) {
+        for (let i = 0; i < v.items.length; i++) {
+            const id = v.items[i];
+            const itemObj = b.list[id];
+            if (itemObj && itemObj.group && targetGroups.indexOf(itemObj.group.id) !== -1) {
+                return id;
+            }
+        }
+    }
+
+    const fallbacks = {
+        1: 3,   // Wood Wall
+        2: 6,   // Spikes
+        3: 10,  // Windmill
+        4: 15,  // Pit Trap
+        5: 17   // Turret
+    };
+    return fallbacks[slotIndex] != null ? fallbacks[slotIndex] : null;
+}
+
 function _hkDoPlace(slotIndex) {
     if (!v || !v.alive) return;
-    const itemId = v.items && v.items[slotIndex];
+    const itemId = _getItemForSlot(slotIndex);
     if (itemId == null) return;
-
-    const item = b && b.list && b.list[itemId];
-    if (item && !v.canBuild(item)) return;
 
     // Snapshot current active weapon (primary or secondary)
     const curWpnIdx = (v.weaponIndex != null) ? v.weaponIndex : 0;
