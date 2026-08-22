@@ -2863,6 +2863,35 @@ window.addEventListener("keydown", function(e) {
 Be.oncontextmenu = function() {
     return !1
 };
+
+// ── RIGHT-CLICK: switch to hammer while RMB is held, restore on release ──
+// "hammer" = great hammer, weapon id 10, type 1 (secondary slot).
+// Only activates if the player's secondary weapon is the hammer (v.weapons[1] === 10).
+let _rmbHammerActive = false;
+let _rmbRestoreId    = null;
+
+Be.addEventListener("mousedown", function _rmbDown(e) {
+    if (e.button !== 2 || !v || !v.alive) return;
+    e.preventDefault();
+    // Check that hammer is equipped as secondary
+    if (v.weapons && v.weapons[1] === 10) {
+        // Save whichever weapon/tool is currently in hand
+        const curWpn = b.weapons[v.weaponIndex];
+        _rmbRestoreId    = curWpn ? curWpn.id : v.weapons[0];
+        _rmbHammerActive = true;
+        O.send("z", 10, true); // switch to hammer
+    }
+});
+
+// Listen on document so we catch mouseup even when cursor drifts off the canvas
+document.addEventListener("mouseup", function _rmbUp(e) {
+    if (e.button !== 2 || !_rmbHammerActive) return;
+    _rmbHammerActive = false;
+    if (_rmbRestoreId !== null && v && v.alive) {
+        O.send("z", _rmbRestoreId, true); // restore previous weapon
+        _rmbRestoreId = null;
+    }
+});
 ["touch-controls-left", "touch-controls-right", "touch-controls-fullscreen", "storeMenu"].forEach(e => {
     document.getElementById(e) && (document.getElementById(e).oncontextmenu = function(t) {
         t.preventDefault()
@@ -3557,7 +3586,29 @@ function Jn() {
 
 function ml(e) {
     const t = e.which || e.keyCode || 0;
-    t == 27 ? Gn() : v && v.alive && Jn() && (ne[t] || (ne[t] = 1, t == 69 ? wl() : t == 67 ? tl() : t == 88 ? gl() : v.weapons[t - 49] != null ? je(v.weapons[t - 49], !0) : v.items[t - 49 - v.weapons.length] != null ? je(v.items[t - 49 - v.weapons.length]) : t == 81 ? je(v.items[0]) : t == 82 ? Qn() : bt[t] ? Tt() : t == 32 && (U = 1, ke())))
+    if (t == 27) { Gn(); return; }
+    if (!v || !v.alive || !Jn() || ne[t]) return;
+    ne[t] = 1;
+
+    // ── Custom insta-place keybinds (select slot + immediately place) ──
+    // Z → slot 6 (v.items[3])
+    if (t === 90) { _instaPlace(3); return; }
+    // F → slot 7 (v.items[4])
+    if (t === 70) { _instaPlace(4); return; }
+    // R → slot 5 (v.items[2])  [overrides old Qn() auto-build]
+    if (t === 82) { _instaPlace(2); return; }
+    // G → slot 8 (v.items[5])
+    if (t === 71) { _instaPlace(5); return; }
+
+    // ── Original key handling ──
+    if (t == 69) { wl(); return; }
+    if (t == 67) { tl(); return; }
+    if (t == 88) { gl(); return; }
+    if (v.weapons[t - 49] != null) { je(v.weapons[t - 49], !0); return; }
+    if (v.items[t - 49 - v.weapons.length] != null) { je(v.items[t - 49 - v.weapons.length]); return; }
+    if (t == 81) { je(v.items[0]); return; }
+    if (bt[t]) { Tt(); return; }
+    if (t == 32) { U = 1; ke(); }
 }
 window.addEventListener("keydown", M.checkTrusted(ml));
 
@@ -3596,6 +3647,20 @@ function wl() {
 
 function je(e, t) {
     O.send("z", e, t)
+}
+
+// ── INSTA-PLACE: select the item at slotIndex in v.items and immediately place it ──
+// Slot numbering: weapons occupy slots 1-2 (v.weapons[0], v.weapons[1]).
+// Items begin at slot 3, so slot N = v.items[N - 1 - v.weapons.length] = v.items[N - 3].
+// Directly: slot 5 → items[2], slot 6 → items[3], slot 7 → items[4], slot 8 → items[5].
+function _instaPlace(slotIndex) {
+    if (!v || !v.alive) return;
+    const itemId = v.items && v.items[slotIndex];
+    if (itemId == null) return;
+    const angle = Ci();
+    O.send("z", itemId, false); // equip the build item
+    O.send("F", 1, angle);      // trigger place (press)
+    O.send("F", 0, angle);      // release place
 }
 
 function Ct() {
@@ -4461,6 +4526,38 @@ window.leaveAlliance = Fn;
 window.createAlliance = ri;
 window.storeBuy = Xn;
 window.storeEquip = di;
+
+// ── AUTO-BUY HATS/ACCESSORIES (ordered priority list) ──
+// Buys the first item in the list that the player doesn't own yet, as soon as gold allows.
+// Checks every 1 second. Does NOT skip ahead — if Monkey Tail isn't bought yet, nothing
+// further in the list is attempted until it is owned.
+const _autoBuyHatList = [
+    { id: 11, isAcc: true,  price: 2000,  name: "Monkey Tail"    },
+    { id: 6,  isAcc: false, price: 4000,  name: "Soldier Helmet" },
+    { id: 31, isAcc: false, price: 2500,  name: "Flipper Hat"    },
+    { id: 12, isAcc: false, price: 6000,  name: "Booster Hat"    },
+    { id: 7,  isAcc: false, price: 6000,  name: "Bull Helmet"    },
+    { id: 40, isAcc: false, price: 15000, name: "Tank Gear"      },
+    { id: 19, isAcc: true,  price: 15000, name: "Shadow Wings"   },
+    { id: 53, isAcc: false, price: 10000, name: "Turret Gear"    },
+];
+
+setInterval(function _tickAutoBuyHat() {
+    if (!v || !v.alive || !et) return;
+    for (let _i = 0; _i < _autoBuyHatList.length; _i++) {
+        const _h     = _autoBuyHatList[_i];
+        // owned check: hats → v.skins[id], accessories → v.tails[id]
+        const _owned = _h.isAcc
+            ? (v.tails  && v.tails[_h.id])
+            : (v.skins  && v.skins[_h.id]);
+        if (_owned) continue; // already have it, check the next in list
+        // Not owned yet — buy if affordable, then stop regardless
+        if ((v.points || 0) >= _h.price) {
+            Xn(_h.id, _h.isAcc ? 1 : 0); // Xn = O.send("c", 1, id, isAccessory)
+        }
+        break; // only attempt the first un-owned item this tick
+    }
+}, 1000);
 window.showItemInfo = $;
 window.selectSkinColor = hl;
 window.changeStoreIndex = sl;
